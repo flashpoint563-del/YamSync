@@ -4,7 +4,7 @@ import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
-    kotlin("plugin.serialization") version "2.1.0"
+    kotlin("plugin.serialization") version "2.4.10"
     id("com.android.library")
 }
 
@@ -133,7 +133,7 @@ tasks.matching { it.name.startsWith("compile") }.configureEach {
 
 android {
     namespace = "io.github.audiz.core"
-    compileSdk = 35
+    compileSdk = 37
     defaultConfig {
         minSdk = 24
     }

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Waves
 import io.github.audiz.isPlatformPickerSupported
 import io.github.audiz.launchDirectoryPicker
 import androidx.compose.material3.*
@@ -322,6 +323,20 @@ fun SettingsDialog(
                                         Spacer(Modifier.width(4.dp))
                                         Text(
                                             "Срезы",
+                                            maxLines = 1,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { actions.onOpenEqualizer?.invoke(2) },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                                        modifier = Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand)
+                                    ) {
+                                        Icon(Icons.Default.Waves, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            "ViPER DSP",
                                             maxLines = 1,
                                             style = MaterialTheme.typography.labelMedium
                                         )

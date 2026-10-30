@@ -2,6 +2,17 @@
   <img src="docs/icon.png" width="128" height="128" alt="YamSync Logo" style="border-radius: 28px;">
 </p>
 
+---
+
+### 📜 Что нового в форке?
+- **🎛️ ViPER Bass & Dynamic Bass:** психоакустическая обработка низких частот (Bass Exciter) и динамический бас.
+- **🛡️ Peak Limiter:** встроенный лимитер и софт-клиппер для защиты динамиков от искажений и перегруза.
+- **🚀 Media3 ExoPlayer на Android:** полный переход с `MediaPlayer` на ExoPlayer с нативной поддержкой DSP и плавным кроссфейдом.
+
+Полный список изменений и историю всех версий смотрите в документе **[CHANGELOG.md](CHANGELOG.md)**.
+
+---
+
 <h1 align="center">YamSync</h1>
 
 <p align="center">
@@ -15,8 +26,7 @@
   <img src="https://img.shields.io/badge/Platforms-Desktop_%7C_iOS_%7C_Android-2ea44f" alt="Platforms">
   <img src="https://img.shields.io/badge/Storage-Offline--First_%7C_Local_Playlists-blue" alt="Offline-First">
   <img src="https://img.shields.io/badge/Sync-YamSync_P2P_%7C_Local_Wi--Fi-success" alt="P2P Sync">
-  <img src="https://img.shields.io/badge/Audio-10--Band_EQ_%7C_DSP-orange" alt="Audio Features">
-  <a href="https://t.me/+5PT1eAkb7CxjYzNi">
+  <img src="https://img.shields.io/badge/Audio-10--Band_EQ_%7C_DSP-orange" alt="Audio Features">  <a href="https://t.me/+5PT1eAkb7CxjYzNi">
     <img src="https://img.shields.io/badge/Telegram-Чат_сообщества-2CA5E0?logo=telegram&logoColor=white" alt="Telegram Chat">
   </a>
   <a href="LICENSE">
@@ -73,7 +83,6 @@
 > **Установка на iOS (Sideloading):**  
 > Файл `.ipa` устанавливается без джейлбрейка через **AltStore**, **SideStore**, **Sideloadly**, **TrollStore** или **Scarlet**.
 
----
 
 ## ✨ Ключевые возможности
 

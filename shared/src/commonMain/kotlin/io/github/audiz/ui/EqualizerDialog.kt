@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -179,6 +180,30 @@ fun EqualizerDialog(
                             }
                         },
                         icon = { Icon(Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                    Tab(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "ViPER DSP",
+                                    fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1
+                                )
+                                if (eqState.viperBassEnabled || eqState.dynBassEnabled) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(6.dp)
+                                    ) {}
+                                }
+                            }
+                        },
+                        icon = { Icon(Icons.Default.Waves, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                 }
 
@@ -368,7 +393,7 @@ fun EqualizerDialog(
                             }
                         }
 
-                    } else {
+                    } else if (selectedTab == 1) {
                         // ===== ВКЛАДКА 1: СРЕЗЫ ЧАСТОТ (HPF И LPF) =====
 
                         // Карточка диапазона пропускания
@@ -676,6 +701,225 @@ fun EqualizerDialog(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
                                 Text("← Назад к 10 полосам", fontSize = 12.sp)
+                            }
+                        }
+                    } else if (selectedTab == 2) {
+                        // ===== ВКЛАДКА 2: ViPER DSP =====
+
+                        // 1. ViPER Bass
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                        Text(
+                                            text = "ViPER Bass",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Bass Exciter (психоакустическая обработка)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Switch(
+                                        checked = eqState.viperBassEnabled,
+                                        onCheckedChange = { EqualizerEngine.setViperBassEnabled(it) },
+                                        modifier = Modifier.scale(0.85f)
+                                    )
+                                }
+
+                                if (eqState.viperBassEnabled) {
+                                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                        val modes = listOf("Natural", "Pure", "Subwoofer")
+                                        modes.forEachIndexed { index, label ->
+                                            SegmentedButton(
+                                                selected = eqState.viperBassMode == index,
+                                                onClick = { EqualizerEngine.setViperBassMode(index) },
+                                                shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
+                                                enabled = eqState.viperBassEnabled
+                                            ) {
+                                                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Частота",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = "${eqState.viperBassCutoffHz.roundToInt()} Гц",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Slider(
+                                        value = eqState.viperBassCutoffHz,
+                                        onValueChange = { EqualizerEngine.setViperBassCutoff(it) },
+                                        valueRange = 30f..120f,
+                                        enabled = eqState.viperBassEnabled,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Усиление",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = "${(eqState.viperBassGainDb * 10).roundToInt() / 10f} дБ",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Slider(
+                                        value = eqState.viperBassGainDb,
+                                        onValueChange = { EqualizerEngine.setViperBassGain(it) },
+                                        valueRange = 0f..15f,
+                                        enabled = eqState.viperBassEnabled,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // 2. Dynamic Bass
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                        Text(
+                                            text = "Dynamic Bass",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Динамическое усиление низких частот",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Switch(
+                                        checked = eqState.dynBassEnabled,
+                                        onCheckedChange = { EqualizerEngine.setDynBassEnabled(it) },
+                                        modifier = Modifier.scale(0.85f)
+                                    )
+                                }
+
+                                if (eqState.dynBassEnabled) {
+                                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                        val modes = listOf("1", "2", "3", "4", "5")
+                                        modes.forEachIndexed { index, label ->
+                                            SegmentedButton(
+                                                selected = eqState.dynBassPreset == index,
+                                                onClick = { EqualizerEngine.setDynBassPreset(index) },
+                                                shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
+                                                enabled = eqState.dynBassEnabled
+                                            ) {
+                                                Text("Пресет $label", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Усиление",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = "${eqState.dynBassGainPct.roundToInt()} %",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Slider(
+                                        value = eqState.dynBassGainPct,
+                                        onValueChange = { EqualizerEngine.setDynBassGain(it) },
+                                        valueRange = 0f..100f,
+                                        enabled = eqState.dynBassEnabled,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // 3. Защита от перегруза (Peak Limiter)
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 6.dp)) {
+                                    Text(
+                                        text = "Защита от перегруза (Limiter)",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Предотвращает клипинг и искажения динамиков",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = eqState.limiterEnabled,
+                                    onCheckedChange = { EqualizerEngine.setLimiterEnabled(it) },
+                                    modifier = Modifier.scale(0.85f)
+                                )
                             }
                         }
                     }
