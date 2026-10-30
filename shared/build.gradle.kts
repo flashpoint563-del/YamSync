@@ -2,14 +2,18 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
-    kotlin("plugin.serialization") version "2.1.0"
+    kotlin("plugin.serialization") version "2.4.10"
     id("com.android.library")
 }
 
 kotlin {
     applyDefaultHierarchyTemplate()
     jvm()
-    androidTarget()
+    androidTarget {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
+    }
 
     listOf(
         iosArm64(),
@@ -84,6 +88,9 @@ kotlin {
         androidMain {
             dependencies {
                 implementation("androidx.activity:activity-compose:1.9.0")
+                val media3Version = "1.5.0"
+                implementation("androidx.media3:media3-exoplayer:$media3Version")
+                implementation("androidx.media3:media3-common:$media3Version")
             }
         }
     }
@@ -91,9 +98,15 @@ kotlin {
 
 android {
     namespace = "io.github.audiz.shared"
-    compileSdk = 35
+    compileSdk = 37
     defaultConfig {
         minSdk = 24
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
     }
 
     sourceSets {
@@ -101,8 +114,14 @@ android {
             jniLibs.srcDirs("src/androidMain/jniLibs")
         }
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
 }
-
+dependencies {
+    implementation(libs.androidx.core.ktx)
+}
 tasks.withType<Test> {
     systemProperty("java.util.prefs.userRoot", "${layout.buildDirectory.get().asFile.absolutePath}/test-prefs")
 }

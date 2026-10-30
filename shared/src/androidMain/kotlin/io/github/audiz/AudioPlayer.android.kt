@@ -1,22 +1,18 @@
 package io.github.audiz
 
-import android.Manifest
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.audiofx.Equalizer as AndroidEqualizer
-import android.media.audiofx.Visualizer
-import android.os.Build
-import android.os.PowerManager
-import io.github.audiz.dsp.AudioVisualizer
-import io.github.audiz.dsp.EqualizerEngine
-import io.github.audiz.dsp.SpectrumBands
+import android.net.Uri
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import io.github.audiz.dsp.YamRenderersFactory
+import io.github.audiz.stream.AndroidStreamMediaDataSource
+import io.github.audiz.stream.LocalStreamProxy
+import io.github.audiz.stream.YamExoDataSource
 import io.github.audiz.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,174 +23,51 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.math.hypot
-import kotlin.math.log10
-import kotlin.math.roundToInt
-import io.github.audiz.stream.AndroidStreamMediaDataSource
-import io.github.audiz.stream.LocalStreamProxy
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.PI
 
-/**
- * 🎵 Android-реализация аудиоплеера на основе MediaPlayer
- *
- * Поддерживает:
- * - Корректное управление фокусом воспроизведения (AudioFocus: звонки, уведомления)
- * - Отключение Bluetooth-устройств и проводных гарнитур (ACTION_AUDIO_BECOMING_NOISY)
- * - Аппаратный 19-полосный FFT-спектроанализатор Winamp Pro и 5-полосный визуализатор через Visualizer API
- * - Аппаратный эквалайзер и частотные срезы HPF/LPF через android.media.audiofx.Equalizer API
- */
 actual class AudioPlayer actual constructor() {
 
-    private var mediaPlayer: MediaPlayer? = null
-    private var fadingMediaPlayer: MediaPlayer? = null
-    @Volatile private var preparingMediaPlayer: MediaPlayer? = null
-    @Volatile private var preparingMediaDataSource: AndroidStreamMediaDataSource? = null
-    @Volatile private var currentMediaDataSource: AndroidStreamMediaDataSource? = null
-    @Volatile private var fadingMediaDataSource: AndroidStreamMediaDataSource? = null
+    private var exoPlayer: ExoPlayer? = null
+    private var fadingExoPlayer: ExoPlayer? = null
+    
     @Volatile private var preparingSessionId: Long = 0L
     @Volatile private var currentSessionId: Long = 0L
+    
+    @Volatile private var currentMediaDataSource: AndroidStreamMediaDataSource? = null
+    @Volatile private var fadingMediaDataSource: AndroidStreamMediaDataSource? = null
+
     private var prepareTimeoutJob: Job? = null
     private var crossfadeJob: Job? = null
-    private var visualizer: Visualizer? = null
-    private var equalizer: AndroidEqualizer? = null
     private val playerScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
-
-    init {
-        playerScope.launch {
-            EqualizerEngine.state.collect { state ->
-                applyEqualizerState(state)
-            }
-        }
-    }
 
     private var tempFile: File? = null
     private var oldTempFile: File? = null
+    
     private var onCompletionListener: (() -> Unit)? = null
     private var onInterruptionListener: ((shouldPause: Boolean, canResume: Boolean) -> Unit)? = null
     private var onErrorListener: ((String) -> Unit)? = null
     private var onPlaybackStartedListener: (() -> Unit)? = null
-
-    private var audioFocusRequest: AudioFocusRequest? = null
-    private var isNoisyReceiverRegistered = false
-
-    private val becomingNoisyReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                println("AudioPlayer Android: ACTION_AUDIO_BECOMING_NOISY (BT/гарнитура отключена) -> пауза")
-                pause()
-                onInterruptionListener?.invoke(true, false)
-            }
-        }
-    }
-
-    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                println("AudioPlayer Android: AUDIOFOCUS_LOSS -> постоянная потеря фокуса -> пауза")
-                pause()
-                onInterruptionListener?.invoke(true, false)
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                println("AudioPlayer Android: AUDIOFOCUS_LOSS_TRANSIENT (звонок/навигатор) -> пауза")
-                pause()
-                onInterruptionListener?.invoke(true, true)
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                println("AudioPlayer Android: AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> пауза")
-                pause()
-                onInterruptionListener?.invoke(true, true)
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                println("AudioPlayer Android: AUDIOFOCUS_GAIN -> восстановление фокуса")
-                onInterruptionListener?.invoke(false, true)
-            }
-        }
-    }
-
-    private fun requestAudioFocus(): Boolean {
+    private var onNearEndListener: (() -> Unit)? = null
+    
+    private var currentVolume: Float = 1f
+    
+    private fun createExoPlayer(): ExoPlayer {
         val context = AppContextHolder.appContext
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
-
-        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val playbackAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(playbackAttributes)
-                .setAcceptsDelayedFocusGain(false)
-                .setOnAudioFocusChangeListener(audioFocusChangeListener)
-                .build()
-            audioFocusRequest = request
-            audioManager.requestAudioFocus(request)
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
-                audioFocusChangeListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            )
-        }
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-    }
-
-    private fun abandonAudioFocus() {
-        try {
-            val context = AppContextHolder.appContext
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-                audioFocusRequest = null
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.abandonAudioFocus(audioFocusChangeListener)
-            }
-        } catch (e: Exception) {
-            println("AudioPlayer Android: Ошибка abandonAudioFocus: ${e.message}")
-        }
-    }
-
-    private fun registerNoisyReceiver() {
-        if (isNoisyReceiverRegistered) return
-        try {
-            val context = AppContextHolder.appContext
-            val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-            context.registerReceiver(becomingNoisyReceiver, filter)
-            isNoisyReceiverRegistered = true
-        } catch (e: Exception) {
-            println("AudioPlayer Android: Ошибка регистрации becomingNoisyReceiver: ${e.message}")
-        }
-    }
-
-    private fun unregisterNoisyReceiver() {
-        if (!isNoisyReceiverRegistered) return
-        try {
-            val context = AppContextHolder.appContext
-            context.unregisterReceiver(becomingNoisyReceiver)
-        } catch (e: Exception) {
-            println("AudioPlayer Android: Ошибка отмены регистрации becomingNoisyReceiver: ${e.message}")
-        } finally {
-            isNoisyReceiverRegistered = false
-        }
-    }
-
-    private fun attachCompletion(player: MediaPlayer) {
-        player.setOnCompletionListener {
-            if (mediaPlayer === player) {
-                try {
-                    fadingMediaPlayer?.stop()
-                    fadingMediaPlayer?.release()
-                } catch (_: Exception) {}
-                fadingMediaPlayer = null
-                oldTempFile?.delete()
-                oldTempFile = null
-
-                abandonAudioFocus()
-                unregisterNoisyReceiver()
-                releaseVisualizer()
-                releaseEqualizer()
-                onCompletionListener?.invoke()
-            }
-        }
+        val renderersFactory = YamRenderersFactory(context)
+        val player = ExoPlayer.Builder(context, renderersFactory).build()
+        
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+        
+        player.setAudioAttributes(audioAttributes, true)
+        player.setHandleAudioBecomingNoisy(true)
+        player.setWakeMode(C.WAKE_MODE_NETWORK)
+        
+        return player
     }
 
     private fun prepareForNewPlayback(crossfadeMs: Long): Long {
@@ -202,36 +75,25 @@ actual class AudioPlayer actual constructor() {
         prepareTimeoutJob?.cancel()
         prepareTimeoutJob = null
 
-        val oldPreparing = preparingMediaPlayer
-        preparingMediaPlayer = null
-        val oldPreparingDs = preparingMediaDataSource
-        preparingMediaDataSource = null
         preparingSessionId = 0L
-        if (oldPreparing != null) {
-            try {
-                oldPreparing.reset()
-                oldPreparing.release()
-            } catch (_: Exception) {}
-        }
-        oldPreparingDs?.close()
 
         if (crossfadeMs <= 0L) {
             crossfadeJob?.cancel()
             crossfadeJob = null
 
             try {
-                fadingMediaPlayer?.stop()
-                fadingMediaPlayer?.release()
+                fadingExoPlayer?.stop()
+                fadingExoPlayer?.release()
             } catch (_: Exception) {}
-            fadingMediaPlayer = null
+            fadingExoPlayer = null
             fadingMediaDataSource?.close()
             fadingMediaDataSource = null
 
             try {
-                mediaPlayer?.stop()
-                mediaPlayer?.release()
+                exoPlayer?.stop()
+                exoPlayer?.release()
             } catch (_: Exception) {}
-            mediaPlayer = null
+            exoPlayer = null
             currentMediaDataSource?.close()
             currentMediaDataSource = null
 
@@ -244,10 +106,11 @@ actual class AudioPlayer actual constructor() {
             crossfadeJob = null
 
             try {
-                fadingMediaPlayer?.stop()
-                fadingMediaPlayer?.release()
+                fadingExoPlayer?.stop()
+                fadingExoPlayer?.release()
             } catch (_: Exception) {}
-            fadingMediaPlayer = null
+            fadingExoPlayer = null
+            
             fadingMediaDataSource?.close()
             fadingMediaDataSource = currentMediaDataSource
             currentMediaDataSource = null
@@ -257,18 +120,16 @@ actual class AudioPlayer actual constructor() {
         }
         return newSessionId
     }
-
-    private fun startCrossfade(newPlayer: MediaPlayer, crossfadeMs: Long) {
+    
+    private fun startCrossfade(newPlayer: ExoPlayer, crossfadeMs: Long) {
         crossfadeJob?.cancel()
-        val outgoing = fadingMediaPlayer ?: mediaPlayer
-        val canCrossfade = outgoing != null && outgoing !== newPlayer && (try { outgoing.isPlaying } catch (_: Exception) { false }) && crossfadeMs > 0L
+        val outgoing = fadingExoPlayer ?: exoPlayer
+        val isOutgoingActive = outgoing != null && (outgoing.isPlaying || (outgoing.playWhenReady && outgoing.playbackState != Player.STATE_ENDED && outgoing.playbackState != Player.STATE_IDLE))
+        val canCrossfade = outgoing != null && outgoing !== newPlayer && isOutgoingActive && crossfadeMs > 0L
 
         if (canCrossfade && outgoing != null) {
-            fadingMediaPlayer = outgoing
-            mediaPlayer = newPlayer
-
-            setupVisualizer(newPlayer.audioSessionId)
-            setupEqualizer(newPlayer.audioSessionId)
+            fadingExoPlayer = outgoing
+            exoPlayer = newPlayer
 
             val stepIntervalMs = 40L
             val steps = (crossfadeMs / stepIntervalMs).toInt().coerceAtLeast(1)
@@ -277,45 +138,137 @@ actual class AudioPlayer actual constructor() {
                 for (step in 1..steps) {
                     kotlinx.coroutines.delay(stepIntervalMs)
                     val t = step.toFloat() / steps
-                    val outFactor = kotlin.math.cos(t * (kotlin.math.PI / 2)).toFloat().coerceIn(0f, 1f)
-                    val inFactor = kotlin.math.sin(t * (kotlin.math.PI / 2)).toFloat().coerceIn(0f, 1f)
+                    val outFactor = cos(t * (PI / 2)).toFloat().coerceIn(0f, 1f)
+                    val inFactor = sin(t * (PI / 2)).toFloat().coerceIn(0f, 1f)
 
                     val outGain = volumeToGain(currentVolume * outFactor)
                     val inGain = volumeToGain(currentVolume * inFactor)
 
-                    try { fadingMediaPlayer?.setVolume(outGain, outGain) } catch (_: Exception) {}
-                    try { newPlayer.setVolume(inGain, inGain) } catch (_: Exception) {}
+                    try { fadingExoPlayer?.volume = outGain } catch (_: Exception) {}
+                    try { newPlayer.volume = inGain } catch (_: Exception) {}
                 }
 
                 try {
-                    fadingMediaPlayer?.stop()
-                    fadingMediaPlayer?.release()
+                    fadingExoPlayer?.stop()
+                    fadingExoPlayer?.release()
                 } catch (_: Exception) {}
-                fadingMediaPlayer = null
+                fadingExoPlayer = null
                 fadingMediaDataSource?.close()
                 fadingMediaDataSource = null
                 oldTempFile?.delete()
                 oldTempFile = null
 
-                val finalGain = volumeToGain(currentVolume)
-                try { newPlayer.setVolume(finalGain, finalGain) } catch (_: Exception) {}
+                try { newPlayer.volume = volumeToGain(currentVolume) } catch (_: Exception) {}
             }
         } else {
             try {
                 outgoing?.stop()
                 outgoing?.release()
             } catch (_: Exception) {}
-            fadingMediaPlayer = null
+            fadingExoPlayer = null
             fadingMediaDataSource?.close()
             fadingMediaDataSource = null
             oldTempFile?.delete()
             oldTempFile = null
 
-            mediaPlayer = newPlayer
-            val gain = volumeToGain(currentVolume)
-            newPlayer.setVolume(gain, gain)
-            setupVisualizer(newPlayer.audioSessionId)
-            setupEqualizer(newPlayer.audioSessionId)
+            exoPlayer = newPlayer
+            newPlayer.volume = volumeToGain(currentVolume)
+        }
+    }
+    
+    private fun attachListenerAndPrepare(
+        player: ExoPlayer,
+        sessionId: Long,
+        mediaDataSource: AndroidStreamMediaDataSource?,
+        crossfadeMs: Long,
+        sourceAction: () -> Unit
+    ) {
+        var started = false
+        player.addListener(object : Player.Listener {
+            
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && !started) {
+                    started = true
+                    prepareTimeoutJob?.cancel()
+                    prepareTimeoutJob = null
+                    
+                    if (sessionId != currentSessionId) {
+                        mediaDataSource?.close()
+                        try { player.release() } catch (_: Exception) {}
+                        return
+                    }
+                    
+                    currentMediaDataSource = mediaDataSource
+                    
+                    val wasPlaying = exoPlayer?.let { it.isPlaying || (it.playWhenReady && it.playbackState != Player.STATE_ENDED && it.playbackState != Player.STATE_IDLE) } == true
+                    if (crossfadeMs > 0L && wasPlaying) {
+                        player.volume = 0f
+                    } else {
+                        player.volume = volumeToGain(currentVolume)
+                    }
+                    
+                    player.play()
+                    startCrossfade(player, crossfadeMs)
+                    onPlaybackStartedListener?.invoke()
+                } else if (playbackState == Player.STATE_ENDED) {
+                    if (exoPlayer === player) {
+                        try {
+                            fadingExoPlayer?.stop()
+                            fadingExoPlayer?.release()
+                        } catch (_: Exception) {}
+                        fadingExoPlayer = null
+                        oldTempFile?.delete()
+                        oldTempFile = null
+                        onCompletionListener?.invoke()
+                    }
+                }
+            }
+            
+            override fun onPlayerError(error: PlaybackException) {
+                AppLogger.e("AudioPlayerAndroid", "Ошибка ExoPlayer для сессии $sessionId: ${error.message}")
+                prepareTimeoutJob?.cancel()
+                prepareTimeoutJob = null
+                mediaDataSource?.close()
+                if (sessionId == currentSessionId) {
+                    try { player.release() } catch (_: Exception) {}
+                    onErrorListener?.invoke("Ошибка воспроизведения аудио: ${error.message}")
+                } else {
+                    try { player.release() } catch (_: Exception) {}
+                }
+            }
+            
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady) {
+                    when (reason) {
+                        Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> {
+                            onInterruptionListener?.invoke(true, false)
+                        }
+                        Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> {
+                            onInterruptionListener?.invoke(true, true)
+                        }
+                    }
+                }
+            }
+        })
+        
+        try {
+            sourceAction()
+            player.prepare()
+        } catch (e: Exception) {
+            mediaDataSource?.close()
+            if (sessionId == currentSessionId) {
+                onErrorListener?.invoke("Ошибка старта: ${e.message}")
+            }
+        }
+        
+        prepareTimeoutJob = playerScope.launch {
+            kotlinx.coroutines.delay(12000L)
+            if (sessionId == currentSessionId && !started) {
+                AppLogger.e("AudioPlayerAndroid", "Таймаут буферизации для сессии $sessionId")
+                mediaDataSource?.close()
+                try { player.release() } catch (_: Exception) {}
+                onErrorListener?.invoke("Таймаут буферизации аудиопотока")
+            }
         }
     }
 
@@ -341,39 +294,10 @@ actual class AudioPlayer actual constructor() {
             oldTempFile = tempFile
             tempFile = tmp
 
-            requestAudioFocus()
-            registerNoisyReceiver()
-
-            val newPlayer = MediaPlayer().apply {
-                setDataSource(tmp.absolutePath)
-                try {
-                    setWakeMode(AppContextHolder.appContext, PowerManager.PARTIAL_WAKE_LOCK)
-                } catch (e: Exception) {
-                    println("AudioPlayer Android: Не удалось установить WakeMode: ${e.message}")
-                }
-                attachCompletion(this)
-                setOnErrorListener { mp, what, extra ->
-                    println("AudioPlayer Android: Ошибка воспроизведения байтов ($what, $extra)")
-                    if (sessionId == currentSessionId) {
-                        try { mp.reset(); mp.release() } catch (_: Exception) {}
-                        onErrorListener?.invoke("Ошибка воспроизведения аудио ($what, $extra)")
-                    } else {
-                        try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    }
-                    true
-                }
-                prepare()
-                val wasPlaying = try { mediaPlayer?.isPlaying == true } catch (_: Exception) { false }
-                if (crossfadeMs > 0L && wasPlaying) {
-                    setVolume(0f, 0f)
-                } else {
-                    val gain = volumeToGain(currentVolume)
-                    setVolume(gain, gain)
-                }
-                start()
+            val newPlayer = createExoPlayer()
+            attachListenerAndPrepare(newPlayer, sessionId, null, crossfadeMs) {
+                newPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(tmp)))
             }
-            startCrossfade(newPlayer, crossfadeMs)
-            onPlaybackStartedListener?.invoke()
         } catch (e: Exception) {
             AppLogger.e("AudioPlayerAndroid", "Ошибка воспроизведения из bytes: ${e.message}")
             if (sessionId == currentSessionId) {
@@ -387,49 +311,14 @@ actual class AudioPlayer actual constructor() {
     actual fun playFromFile(filePath: String, crossfadeMs: Long) {
         val sessionId = prepareForNewPlayback(crossfadeMs)
         try {
-            requestAudioFocus()
-            registerNoisyReceiver()
-
             val cleanPath = filePath.trim().removePrefix("local:").removePrefix("file://")
             val resolvedPath = resolveLocalPath(cleanPath)
             val file = File(resolvedPath)
 
-            val newPlayer = MediaPlayer().apply {
-                if (file.exists()) {
-                    java.io.FileInputStream(file).use { fis ->
-                        setDataSource(fis.fd, 0L, file.length())
-                    }
-                } else {
-                    setDataSource(resolvedPath)
-                }
-                try {
-                    setWakeMode(AppContextHolder.appContext, PowerManager.PARTIAL_WAKE_LOCK)
-                } catch (e: Exception) {
-                    println("AudioPlayer Android: Не удалось установить WakeMode: ${e.message}")
-                }
-                attachCompletion(this)
-                setOnErrorListener { mp, what, extra ->
-                    println("AudioPlayer Android: Ошибка воспроизведения файла ($what, $extra)")
-                    if (sessionId == currentSessionId) {
-                        try { mp.reset(); mp.release() } catch (_: Exception) {}
-                        onErrorListener?.invoke("Ошибка воспроизведения файла ($what, $extra)")
-                    } else {
-                        try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    }
-                    true
-                }
-                prepare()
-                val wasPlaying = try { mediaPlayer?.isPlaying == true } catch (_: Exception) { false }
-                if (crossfadeMs > 0L && wasPlaying) {
-                    setVolume(0f, 0f)
-                } else {
-                    val gain = volumeToGain(currentVolume)
-                    setVolume(gain, gain)
-                }
-                start()
+            val newPlayer = createExoPlayer()
+            attachListenerAndPrepare(newPlayer, sessionId, null, crossfadeMs) {
+                newPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             }
-            startCrossfade(newPlayer, crossfadeMs)
-            onPlaybackStartedListener?.invoke()
         } catch (e: Exception) {
             AppLogger.e("AudioPlayerAndroid", "Ошибка воспроизведения файла: ${e.message}")
             if (sessionId == currentSessionId) {
@@ -449,11 +338,9 @@ actual class AudioPlayer actual constructor() {
     actual fun playFromUrl(url: String, crossfadeMs: Long) {
         val sessionId = prepareForNewPlayback(crossfadeMs)
         try {
-            val newPlayer = MediaPlayer()
-            preparingMediaPlayer = newPlayer
-            preparingSessionId = sessionId
-
+            val newPlayer = createExoPlayer()
             var mediaDataSource: AndroidStreamMediaDataSource? = null
+            
             if (url.startsWith("yamusic-stream://")) {
                 val queryParams = parseQueryParams(url)
                 val trackIdWithExt = url.substringAfter("yamusic-stream://stream/").substringBefore("?")
@@ -465,109 +352,24 @@ actual class AudioPlayer actual constructor() {
                 val ds = LocalStreamProxy.createMediaDataSource(trackId, quality, title, artist)
                 if (ds != null) {
                     mediaDataSource = ds
-                    preparingMediaDataSource = ds
-                    newPlayer.setDataSource(ds)
+                    attachListenerAndPrepare(newPlayer, sessionId, ds, crossfadeMs) {
+                        val factory = DataSource.Factory { YamExoDataSource(ds) }
+                        val mediaSource = DefaultMediaSourceFactory(factory).createMediaSource(MediaItem.fromUri(url))
+                        newPlayer.setMediaSource(mediaSource)
+                    }
                 } else {
-                    newPlayer.setDataSource(url)
+                    attachListenerAndPrepare(newPlayer, sessionId, null, crossfadeMs) {
+                        newPlayer.setMediaItem(MediaItem.fromUri(url))
+                    }
                 }
             } else {
-                newPlayer.setDataSource(url)
-            }
-
-            try {
-                newPlayer.setWakeMode(AppContextHolder.appContext, PowerManager.PARTIAL_WAKE_LOCK)
-            } catch (e: Exception) {
-                println("AudioPlayer Android: Не удалось установить WakeMode: ${e.message}")
-            }
-            attachCompletion(newPlayer)
-
-            newPlayer.setOnErrorListener { mp, what, extra ->
-                println("AudioPlayer Android: Ошибка MediaPlayer для сессии $sessionId (what=$what, extra=$extra)")
-                prepareTimeoutJob?.cancel()
-                prepareTimeoutJob = null
-                mediaDataSource?.close()
-                if (sessionId == currentSessionId) {
-                    if (preparingMediaPlayer === mp) {
-                        preparingMediaPlayer = null
-                    }
-                    if (preparingMediaDataSource === mediaDataSource) {
-                        preparingMediaDataSource = null
-                    }
-                    try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    onErrorListener?.invoke("Ошибка декодирования или загрузки потока ($what, $extra)")
-                } else {
-                    try { mp.reset(); mp.release() } catch (_: Exception) {}
-                }
-                true
-            }
-
-            newPlayer.setOnPreparedListener { mp ->
-                prepareTimeoutJob?.cancel()
-                prepareTimeoutJob = null
-
-                if (sessionId != currentSessionId) {
-                    println("AudioPlayer Android: Сессия $sessionId устарела (текущая: $currentSessionId), освобождаем плеер")
-                    mediaDataSource?.close()
-                    try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    if (preparingMediaPlayer === mp) {
-                        preparingMediaPlayer = null
-                    }
-                    if (preparingMediaDataSource === mediaDataSource) {
-                        preparingMediaDataSource = null
-                    }
-                    return@setOnPreparedListener
-                }
-
-                if (preparingMediaPlayer === mp) {
-                    preparingMediaPlayer = null
-                }
-                if (preparingMediaDataSource === mediaDataSource) {
-                    preparingMediaDataSource = null
-                }
-                currentMediaDataSource = mediaDataSource
-
-                requestAudioFocus()
-                registerNoisyReceiver()
-
-                val wasPlaying = try { mediaPlayer?.isPlaying == true } catch (_: Exception) { false }
-                if (crossfadeMs > 0L && wasPlaying) {
-                    mp.setVolume(0f, 0f)
-                } else {
-                    val gain = volumeToGain(currentVolume)
-                    mp.setVolume(gain, gain)
-                }
-
-                try {
-                    mp.start()
-                    startCrossfade(mp, crossfadeMs)
-                    onPlaybackStartedListener?.invoke()
-                } catch (e: Exception) {
-                    println("AudioPlayer Android: Ошибка старта плеера: ${e.message}")
-                    mediaDataSource?.close()
-                    try { mp.reset(); mp.release() } catch (_: Exception) {}
-                    onErrorListener?.invoke("Ошибка запуска воспроизведения: ${e.message}")
+                attachListenerAndPrepare(newPlayer, sessionId, null, crossfadeMs) {
+                    newPlayer.setMediaItem(MediaItem.fromUri(url))
                 }
             }
-
-            // Таймаут на асинхронную буферизацию (12 секунд)
-            prepareTimeoutJob = playerScope.launch {
-                kotlinx.coroutines.delay(12000L)
-                if (sessionId == currentSessionId && preparingMediaPlayer === newPlayer) {
-                    println("AudioPlayer Android: Таймаут буферизации для сессии $sessionId")
-                    preparingMediaPlayer = null
-                    preparingMediaDataSource = null
-                    mediaDataSource?.close()
-                    try { newPlayer.reset(); newPlayer.release() } catch (_: Exception) {}
-                    onErrorListener?.invoke("Таймаут буферизации аудиопотока")
-                }
-            }
-
-            newPlayer.prepareAsync()
         } catch (e: Exception) {
             AppLogger.e("AudioPlayerAndroid", "Ошибка вызова playFromUrl: ${e.message}")
             if (sessionId == currentSessionId) {
-                preparingMediaPlayer = null
-                preparingMediaDataSource = null
                 onErrorListener?.invoke("Не удалось инициализировать аудиоплеер: ${e.message}")
             }
         }
@@ -589,41 +391,13 @@ actual class AudioPlayer actual constructor() {
     }
 
     actual fun pause() {
-        try {
-            mediaPlayer?.takeIf { it.isPlaying }?.pause()
-        } catch (_: Exception) {}
-        try {
-            fadingMediaPlayer?.takeIf { it.isPlaying }?.pause()
-        } catch (_: Exception) {}
-        try {
-            visualizer?.enabled = false
-        } catch (_: Exception) {}
-        unregisterNoisyReceiver()
+        try { exoPlayer?.pause() } catch (_: Exception) {}
+        try { fadingExoPlayer?.pause() } catch (_: Exception) {}
     }
 
     actual fun resume() {
-        requestAudioFocus()
-        registerNoisyReceiver()
-        try {
-            mediaPlayer?.start()
-            fadingMediaPlayer?.start()
-            try {
-                if (visualizer == null) {
-                    val sessionId = mediaPlayer?.audioSessionId ?: 0
-                    if (sessionId > 0) setupVisualizer(sessionId)
-                } else {
-                    visualizer?.enabled = true
-                }
-            } catch (_: Throwable) {}
-            try {
-                if (equalizer == null) {
-                    val sessionId = mediaPlayer?.audioSessionId ?: 0
-                    if (sessionId > 0) setupEqualizer(sessionId)
-                } else {
-                    applyEqualizerState(EqualizerEngine.state.value)
-                }
-            } catch (_: Throwable) {}
-        } catch (_: Throwable) {}
+        try { exoPlayer?.play() } catch (_: Exception) {}
+        try { fadingExoPlayer?.play() } catch (_: Exception) {}
     }
 
     actual fun stop() {
@@ -631,23 +405,14 @@ actual class AudioPlayer actual constructor() {
         prepareTimeoutJob?.cancel()
         prepareTimeoutJob = null
 
-        val oldPreparing = preparingMediaPlayer
-        preparingMediaPlayer = null
-        val oldPreparingDs = preparingMediaDataSource
-        preparingMediaDataSource = null
-        preparingSessionId = 0L
-        if (oldPreparing != null) {
-            try { oldPreparing.reset(); oldPreparing.release() } catch (_: Exception) {}
-        }
-        oldPreparingDs?.close()
-
         crossfadeJob?.cancel()
         crossfadeJob = null
         try {
-            fadingMediaPlayer?.stop()
-            fadingMediaPlayer?.release()
+            fadingExoPlayer?.stop()
+            fadingExoPlayer?.release()
         } catch (_: Exception) {}
-        fadingMediaPlayer = null
+        fadingExoPlayer = null
+        
         fadingMediaDataSource?.close()
         fadingMediaDataSource = null
         oldTempFile?.delete()
@@ -656,22 +421,25 @@ actual class AudioPlayer actual constructor() {
         currentMediaDataSource?.close()
         currentMediaDataSource = null
 
-        abandonAudioFocus()
-        unregisterNoisyReceiver()
-        releaseVisualizer()
-        releaseEqualizer()
         try {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
+            exoPlayer?.stop()
+            exoPlayer?.release()
         } catch (_: Exception) {}
-        mediaPlayer = null
+        exoPlayer = null
+        
         tempFile?.delete()
         tempFile = null
     }
 
     actual fun isPlaying(): Boolean {
         return try {
-            mediaPlayer?.isPlaying ?: (fadingMediaPlayer?.isPlaying ?: false)
+            val p = exoPlayer
+            if (p != null) {
+                p.isPlaying || (p.playWhenReady && p.playbackState != Player.STATE_ENDED && p.playbackState != Player.STATE_IDLE)
+            } else {
+                val f = fadingExoPlayer
+                f != null && (f.isPlaying || (f.playWhenReady && f.playbackState != Player.STATE_ENDED && f.playbackState != Player.STATE_IDLE))
+            }
         } catch (_: Exception) {
             false
         }
@@ -679,7 +447,8 @@ actual class AudioPlayer actual constructor() {
 
     actual fun getDurationMs(): Long {
         return try {
-            mediaPlayer?.duration?.toLong() ?: 0L
+            val d = exoPlayer?.duration ?: 0L
+            if (d == C.TIME_UNSET) 0L else d
         } catch (_: Exception) {
             0L
         }
@@ -687,7 +456,7 @@ actual class AudioPlayer actual constructor() {
 
     actual fun getCurrentPositionMs(): Long {
         return try {
-            mediaPlayer?.currentPosition?.toLong() ?: 0L
+            exoPlayer?.currentPosition ?: 0L
         } catch (_: Exception) {
             0L
         }
@@ -695,18 +464,16 @@ actual class AudioPlayer actual constructor() {
 
     actual fun seekTo(positionMs: Long) {
         try {
-            mediaPlayer?.seekTo(positionMs.coerceAtLeast(0L).toInt())
+            exoPlayer?.seekTo(positionMs.coerceAtLeast(0L))
         } catch (_: Throwable) {}
     }
-
-    private var currentVolume: Float = 1f
 
     actual fun setVolume(volume: Float) {
         currentVolume = volume.coerceIn(0f, 1f)
         if (crossfadeJob?.isActive != true) {
             val gain = volumeToGain(currentVolume)
             try {
-                mediaPlayer?.setVolume(gain, gain)
+                exoPlayer?.volume = gain
             } catch (_: Exception) {}
         }
     }
@@ -727,190 +494,21 @@ actual class AudioPlayer actual constructor() {
         onPlaybackStartedListener = listener
     }
 
-    private var onNearEndListener: (() -> Unit)? = null
     actual fun setOnNearEndListener(listener: (() -> Unit)?) {
         onNearEndListener = listener
     }
 
     actual fun updateNearEndThreshold(thresholdMs: Long, expectedDurationMs: Long) {
-        // Android MediaPlayer handles near-end progress via PlaybackManager polling
+        // Handled via polling in PlaybackManager if needed
     }
 
     actual fun release() {
         stop()
-        releaseVisualizer()
-        releaseEqualizer()
         playerScope.cancel()
         onCompletionListener = null
         onInterruptionListener = null
         onErrorListener = null
         onPlaybackStartedListener = null
-    }
-
-    private fun setupEqualizer(audioSessionId: Int) {
-        releaseEqualizer()
-        if (audioSessionId <= 0) return
-
-        try {
-            val eq = AndroidEqualizer(0, audioSessionId)
-            equalizer = eq
-            applyEqualizerState(EqualizerEngine.state.value)
-            println("AudioPlayer Android: Equalizer успешно запущен (session=$audioSessionId, bands=${eq.numberOfBands})")
-        } catch (e: Throwable) {
-            println("AudioPlayer Android: Не удалось запустить Equalizer: ${e.message}")
-            releaseEqualizer()
-        }
-    }
-
-    private fun applyEqualizerState(state: EqualizerEngine.State) {
-        val eq = equalizer ?: return
-        try {
-            if (!state.isEnabled) {
-                eq.enabled = false
-                return
-            }
-
-            val range = eq.bandLevelRange
-            val minMb = if (range != null && range.size >= 2) range[0] else -1500.toShort()
-            val maxMb = if (range != null && range.size >= 2) range[1] else 1500.toShort()
-
-            val numBands = eq.numberOfBands
-            for (b in 0 until numBands) {
-                val centerFreqHz = eq.getCenterFreq(b.toShort()) / 1000f
-                val targetGainDb = EqualizerEngine.calculateEffectiveGainDb(centerFreqHz)
-                val targetMb = (targetGainDb * 100f).roundToInt().coerceIn(minMb.toInt(), maxMb.toInt()).toShort()
-                eq.setBandLevel(b.toShort(), targetMb)
-            }
-
-            eq.enabled = true
-        } catch (e: Throwable) {
-            println("AudioPlayer Android: Ошибка применения настроек эквалайзера: ${e.message}")
-        }
-    }
-
-    private fun releaseEqualizer() {
-        try {
-            equalizer?.enabled = false
-            equalizer?.release()
-        } catch (_: Throwable) {
-        } finally {
-            equalizer = null
-        }
-    }
-
-    private fun setupVisualizer(audioSessionId: Int) {
-        releaseVisualizer()
-        if (audioSessionId <= 0) return
-
-        val context = AppContextHolder.appContext
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            println("AudioPlayer Android: RECORD_AUDIO не предоставлено -> Visualizer не активен (fallback волна)")
-            return
-        }
-
-        try {
-            val v = Visualizer(audioSessionId)
-            val range = Visualizer.getCaptureSizeRange()
-            val captureSize = if (range.size >= 2) range[1].coerceAtMost(1024) else 512
-            v.captureSize = captureSize
-
-            val maxRate = Visualizer.getMaxCaptureRate()
-            v.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
-
-                override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {
-                    if (fft == null || fft.isEmpty() || !isPlaying()) return
-                    try {
-                        processAndroidFft(fft, samplingRate, captureSize)
-                    } catch (_: Throwable) {}
-                }
-            }, maxRate, false, true)
-
-            v.enabled = true
-            visualizer = v
-            println("AudioPlayer Android: Visualizer успешно запущен (session=$audioSessionId, captureSize=$captureSize, rate=$maxRate)")
-        } catch (e: Throwable) {
-            println("AudioPlayer Android: Ошибка инициализации Visualizer: ${e.message}")
-            releaseVisualizer()
-        }
-    }
-
-    private fun releaseVisualizer() {
-        try {
-            visualizer?.enabled = false
-            visualizer?.release()
-        } catch (_: Throwable) {
-        } finally {
-            visualizer = null
-        }
-        AudioVisualizer.clearDelayQueue()
-    }
-
-    private fun processAndroidFft(fft: ByteArray, samplingRateMilliHz: Int, captureSize: Int) {
-        val n = minOf(fft.size, captureSize)
-        val numBins = n / 2
-        if (numBins < 4) return
-
-        val sampleRateHz = if (samplingRateMilliHz > 0) samplingRateMilliHz / 1000f else 44100f
-        val binHz = sampleRateHz / n.toFloat()
-        if (binHz <= 0f) return
-
-        val magnitudesDb = FloatArray(numBins)
-        val amplitudes = FloatArray(numBins)
-        magnitudesDb[0] = -100f
-
-        for (k in 1 until numBins) {
-            val r = fft[2 * k].toFloat()
-            val i = fft[2 * k + 1].toFloat()
-            val mag = hypot(r, i)
-            amplitudes[k] = mag / 128f
-            magnitudesDb[k] = if (mag > 0.01f) {
-                (20f * log10(mag / 128f)).coerceIn(-60f, 0f)
-            } else {
-                -60f
-            }
-        }
-
-        val threshold = -60f
-        fun calcBandEnergy(fStart: Float, fEnd: Float, tiltDb: Float, peakWeight: Float = 0.65f): Float {
-            val startBin = (fStart / binHz).toInt().coerceIn(1, numBins - 1)
-            val endBin = (fEnd / binHz).toInt().coerceIn(startBin, numBins - 1)
-            var sum = 0f
-            var maxDb = -120f
-            for (k in startBin..endBin) {
-                val v = magnitudesDb[k]
-                sum += v
-                if (v > maxDb) maxDb = v
-            }
-            val avgDb = sum / (endBin - startBin + 1)
-            val combinedDb = (maxDb * peakWeight + avgDb * (1f - peakWeight)) + tiltDb
-            return ((combinedDb - threshold) / (-threshold)).coerceIn(0f, 1f)
-        }
-
-        // 25 аппаратных полос (20 Гц .. 20 кГц) для обложки альбома
-        val spectrum25 = FloatArray(25)
-        for (k in 0 until 25) {
-            val (fStart, fEnd) = FREQ_RANGES_25[k]
-            spectrum25[k] = SpectrumBands.bandLevel(amplitudes, numBins, binHz, fStart, fEnd, SpectrumBands.tiltDb(k))
-        }
-
-        // 5 полос для кнопок плеера и микро-иконок
-        // 1. Sub-bass / Kick (~30 - 170 Гц): -7.0 дБ
-        val b1 = calcBandEnergy(30f, 170f, tiltDb = -7.0f)
-        // 2. Bass & Mid-bass (~170 - 680 Гц): +4.5 дБ (85% пик)
-        val b2 = calcBandEnergy(170f, 680f, tiltDb = 4.5f, peakWeight = 0.85f)
-        // 3. Mids (~680 - 2200 Гц): +3.0 дБ
-        val b3 = calcBandEnergy(680f, 2200f, tiltDb = 3.0f)
-        // 4. High-Mids (~2200 - 6500 Гц): +9.0 дБ
-        val b4 = calcBandEnergy(2200f, 6500f, tiltDb = 9.0f)
-        // 5. Treble (~6500 - 15000 Гц): +15.5 дБ
-        val b5 = calcBandEnergy(6500f, 15000f, tiltDb = 15.5f)
-
-        AudioVisualizer.updateSpectrum(spectrum25)
-    }
-
-    companion object {
-        // 🎛️ 25 частотных полос из единого источника VisualizerConstants
-        private val FREQ_RANGES_25 get() = io.github.audiz.dsp.VisualizerConstants.FREQ_RANGES_25
+        onNearEndListener = null
     }
 }
