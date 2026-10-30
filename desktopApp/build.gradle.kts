@@ -26,7 +26,7 @@ compose.desktop {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Dmg)
 
             packageName = "yamsync"
-            packageVersion = appVersion.let { if (it.count { c -> c == '.' } == 1) "$it.0" else it }
+            packageVersion = appVersion.takeWhile { it.isDigit() || it == '.' }.let { if (it.count { c -> c == '.' } == 1) "$it.0" else it }
 
             // Настройки сборки для Windows
             windows {
