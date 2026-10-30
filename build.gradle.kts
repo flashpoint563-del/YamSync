@@ -7,5 +7,5 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform) apply false
     id("com.android.library") version "9.5.0" apply false
     id("com.android.application") version "9.5.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.2.20" apply false // укажите тут ту же версию Котлина, что у вас в проекте (2.2.20 или 2.4.10)
+    alias(libs.plugins.kotlinAndroid) apply false
 }

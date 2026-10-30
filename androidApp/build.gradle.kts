@@ -13,7 +13,7 @@ val appVersion: String = providers.environmentVariable("APP_VERSION").orNull
 
 android {
     namespace = "io.github.audiz.android"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "io.github.audiz.yandexdownloader"

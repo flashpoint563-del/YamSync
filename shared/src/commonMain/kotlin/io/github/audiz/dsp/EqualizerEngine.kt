@@ -71,7 +71,13 @@ object EqualizerEngine {
         val viperBassEnabled: Boolean = false,
         val viperBassMode: Int = 0,
         val viperBassCutoffHz: Float = 60f,
-        val viperBassGainDb: Float = 0f
+        val viperBassGainDb: Float = 0f,
+        // Dynamic Bass
+        val dynBassEnabled: Boolean = false,
+        val dynBassPreset: Int = 0,
+        val dynBassGainPct: Float = 33f,
+        // Защита от пикового клипинга
+        val limiterEnabled: Boolean = true
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -79,7 +85,9 @@ object EqualizerEngine {
             return isEnabled == other.isEnabled && hpfHz == other.hpfHz && lpfHz == other.lpfHz &&
                     gains.contentEquals(other.gains) && presetName == other.presetName &&
                     viperBassEnabled == other.viperBassEnabled && viperBassMode == other.viperBassMode &&
-                    viperBassCutoffHz == other.viperBassCutoffHz && viperBassGainDb == other.viperBassGainDb
+                    viperBassCutoffHz == other.viperBassCutoffHz && viperBassGainDb == other.viperBassGainDb &&
+                    dynBassEnabled == other.dynBassEnabled && dynBassPreset == other.dynBassPreset &&
+                    dynBassGainPct == other.dynBassGainPct && limiterEnabled == other.limiterEnabled
         }
 
         override fun hashCode(): Int {
@@ -92,6 +100,10 @@ object EqualizerEngine {
             result = 31 * result + viperBassMode.hashCode()
             result = 31 * result + viperBassCutoffHz.hashCode()
             result = 31 * result + viperBassGainDb.hashCode()
+            result = 31 * result + dynBassEnabled.hashCode()
+            result = 31 * result + dynBassPreset.hashCode()
+            result = 31 * result + dynBassGainPct.hashCode()
+            result = 31 * result + limiterEnabled.hashCode()
             return result
         }
     }
@@ -117,6 +129,16 @@ object EqualizerEngine {
     private val bandFilters = Array(10) { BiquadFilter() }
     private val lpfFilter = BiquadFilter()
     private val viperBassDsp = ViperBassDsp()
+    private val dynamicBassDsp = DynamicBassDsp()
+    private var envState = 0f
+
+    private fun smoothLimit(x: Float): Float {
+        val t = 0.90f
+        val ax = abs(x)
+        if (ax <= t) return x
+        val sign = if (x >= 0f) 1f else -1f
+        return sign * (t + (1f - t) * tanh((ax - t) / (1f - t)))
+    }
 
     init {
         synchronized(filterLock) {
@@ -230,6 +252,38 @@ object EqualizerEngine {
             recalculateFiltersLocked()
         }
     }
+    
+    fun setDynBassEnabled(enabled: Boolean) {
+        synchronized(filterLock) {
+            _state.value = _state.value.copy(dynBassEnabled = enabled)
+            saveAppConfig("eq_dyn_bass_enabled", enabled.toString())
+            recalculateFiltersLocked()
+        }
+    }
+    
+    fun setDynBassPreset(preset: Int) {
+        synchronized(filterLock) {
+            _state.value = _state.value.copy(dynBassPreset = preset)
+            saveAppConfig("eq_dyn_bass_preset", preset.toString())
+            recalculateFiltersLocked()
+        }
+    }
+    
+    fun setDynBassGain(gain: Float) {
+        synchronized(filterLock) {
+            _state.value = _state.value.copy(dynBassGainPct = gain)
+            saveAppConfig("eq_dyn_bass_gain", gain.toString())
+            recalculateFiltersLocked()
+        }
+    }
+
+    fun setLimiterEnabled(enabled: Boolean) {
+        synchronized(filterLock) {
+            _state.value = _state.value.copy(limiterEnabled = enabled)
+            saveAppConfig("eq_limiter_enabled", enabled.toString())
+            recalculateFiltersLocked()
+        }
+    }
 
     fun setHpfCutoff(freqHz: Float) {
         val clamped = freqHz.coerceIn(20f, 250f)
@@ -303,11 +357,12 @@ object EqualizerEngine {
     }
 
     private fun recalculateFiltersLocked() {
-        if (!isEnabled && !_state.value.viperBassEnabled) {
+        if (!isEnabled && !_state.value.viperBassEnabled && !_state.value.dynBassEnabled) {
             hpfFilter.setBypass()
             for (f in bandFilters) f.setBypass()
             lpfFilter.setBypass()
             viperBassDsp.setBand1(0, 60f, 0f)
+            dynamicBassDsp.setPresetAndGain(0, 0f)
             onStateChanged?.invoke(_state.value)
             return
         }
@@ -329,6 +384,13 @@ object EqualizerEngine {
         } else {
             viperBassDsp.setBand1(0, 60f, 0f)
         }
+        
+        dynamicBassDsp.setSampleRate(sampleRate)
+        if (_state.value.dynBassEnabled) {
+            dynamicBassDsp.setPresetAndGain(_state.value.dynBassPreset, _state.value.dynBassGainPct)
+        } else {
+            dynamicBassDsp.setPresetAndGain(0, 0f)
+        }
 
         onStateChanged?.invoke(_state.value)
     }
@@ -338,10 +400,10 @@ object EqualizerEngine {
      * Выполняется in-place без выделения памяти на куче.
      */
     fun processPcm(buffer: ByteArray, bytesRead: Int) {
-        if (!isEnabled && !_state.value.viperBassEnabled) return
+        if (!isEnabled && !_state.value.viperBassEnabled && !_state.value.dynBassEnabled) return
 
         synchronized(filterLock) {
-            if (!isEnabled && !_state.value.viperBassEnabled) return
+            if (!isEnabled && !_state.value.viperBassEnabled && !_state.value.dynBassEnabled) return
             var i = 0
             while (i < bytesRead - 3) {
                 val leftRaw = (buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)
@@ -370,6 +432,34 @@ object EqualizerEngine {
                 if (_state.value.viperBassEnabled) {
                     l = viperBassDsp.processSample(l, 0)
                     r = viperBassDsp.processSample(r, 1)
+                }
+                
+                if (_state.value.dynBassEnabled) {
+                    val stereo = dynamicBassDsp.processStereo(l, r)
+                    l = stereo.first
+                    r = stereo.second
+                }
+
+                // Защита от клипинга (Peak Limiter & Soft-Knee Clipper)
+                if (_state.value.limiterEnabled) {
+                    val attackCoef = exp(-1.0f / (0.0005f * sampleRate))
+                    val releaseCoef = exp(-1.0f / (0.080f * sampleRate))
+
+                    val peak = maxOf(abs(l), abs(r))
+                    if (peak > envState) {
+                        envState = attackCoef * envState + (1.0f - attackCoef) * peak
+                    } else {
+                        envState = releaseCoef * envState + (1.0f - releaseCoef) * peak
+                    }
+
+                    if (envState > 0.92f) {
+                        val envGain = 0.92f / envState
+                        l *= envGain
+                        r *= envGain
+                    }
+
+                    l = smoothLimit(l)
+                    r = smoothLimit(r)
                 }
 
                 // Ограничение амплитуды (soft clamp)
@@ -400,6 +490,11 @@ object EqualizerEngine {
         val viperBassMode = loadAppConfig("eq_viper_bass_mode")?.toIntOrNull() ?: 0
         val viperBassCutoff = loadAppConfig("eq_viper_bass_cutoff")?.toFloatOrNull() ?: 60f
         val viperBassGain = loadAppConfig("eq_viper_bass_gain")?.toFloatOrNull() ?: 0f
+        
+        val dynBassEnabled = loadAppConfig("eq_dyn_bass_enabled")?.toBooleanStrictOrNull() ?: false
+        val dynBassPreset = loadAppConfig("eq_dyn_bass_preset")?.toIntOrNull() ?: 0
+        val dynBassGain = loadAppConfig("eq_dyn_bass_gain")?.toFloatOrNull() ?: 33f
+        val limiterEnabled = loadAppConfig("eq_limiter_enabled")?.toBooleanStrictOrNull() ?: true
 
         isEnabled = enabled
         hpfHz = hpf.coerceIn(20f, 250f)
@@ -414,7 +509,11 @@ object EqualizerEngine {
             viperBassEnabled = viperBassEnabled,
             viperBassMode = viperBassMode,
             viperBassCutoffHz = viperBassCutoff,
-            viperBassGainDb = viperBassGain
+            viperBassGainDb = viperBassGain,
+            dynBassEnabled = dynBassEnabled,
+            dynBassPreset = dynBassPreset,
+            dynBassGainPct = dynBassGain,
+            limiterEnabled = limiterEnabled
         )
     }
 }
