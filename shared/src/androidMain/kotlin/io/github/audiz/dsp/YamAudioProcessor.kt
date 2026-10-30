@@ -11,6 +11,9 @@ class YamAudioProcessor(
     private val equalizerEngine: EqualizerEngine = EqualizerEngine,
     private val audioVisualizer: AudioVisualizer = AudioVisualizer
 ) : BaseAudioProcessor() {
+
+    // Собственный независимый процессор фильтров для этого плеера
+    private val dspProcessor = AudioDspProcessor()
     private var sampleRateHz: Int = -1
     private var tempByteArray = ByteArray(0)
 
@@ -30,7 +33,7 @@ class YamAudioProcessor(
 
         if (sampleRateHz != inputAudioFormat.sampleRate) {
             sampleRateHz = inputAudioFormat.sampleRate
-            equalizerEngine.setSampleRate(sampleRateHz.toFloat())
+            dspProcessor.setSampleRate(sampleRateHz.toFloat())
         }
 
         return inputAudioFormat
@@ -43,19 +46,18 @@ class YamAudioProcessor(
         val buffer = replaceOutputBuffer(remaining)
         buffer.order(ByteOrder.LITTLE_ENDIAN)
 
-        // Читаем из inputBuffer в tempByteArray
         if (tempByteArray.size < remaining) {
             tempByteArray = ByteArray(remaining)
         }
         inputBuffer.get(tempByteArray, 0, remaining)
 
-        // Обрабатываем ByteArray нашими Kotlin-эффектами
-        equalizerEngine.processPcm(tempByteArray, remaining)
+        // Используем собственный изолированный dspProcessor с актуальным состоянием настроек
+        val currentState = equalizerEngine.state.value
+        dspProcessor.processPcm(tempByteArray, remaining, currentState)
 
         // Отправляем на визуализацию
         audioVisualizer.processPcmChunk(tempByteArray, remaining)
 
-        // Пишем обратно
         buffer.put(tempByteArray, 0, remaining)
         buffer.flip()
     }

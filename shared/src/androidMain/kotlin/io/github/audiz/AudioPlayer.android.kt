@@ -1,6 +1,14 @@
 package io.github.audiz
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes as AndroidAudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -53,6 +61,98 @@ actual class AudioPlayer actual constructor() {
     
     private var currentVolume: Float = 1f
     
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var isNoisyReceiverRegistered = false
+
+    private val becomingNoisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                pause()
+                onInterruptionListener?.invoke(true, false)
+            }
+        }
+    }
+
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                pause()
+                onInterruptionListener?.invoke(true, false)
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                pause()
+                onInterruptionListener?.invoke(true, true)
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                pause()
+                onInterruptionListener?.invoke(true, true)
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                onInterruptionListener?.invoke(false, true)
+            }
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val context = AppContextHolder.appContext
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
+
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val playbackAttributes = AndroidAudioAttributes.Builder()
+                .setUsage(AndroidAudioAttributes.USAGE_MEDIA)
+                .setContentType(AndroidAudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(playbackAttributes)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build()
+            audioFocusRequest = request
+            audioManager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        val context = AppContextHolder.appContext
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+    }
+
+    private fun registerNoisyReceiver() {
+        if (isNoisyReceiverRegistered) return
+        try {
+            val context = AppContextHolder.appContext
+            val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            context.registerReceiver(becomingNoisyReceiver, filter)
+            isNoisyReceiverRegistered = true
+        } catch (_: Exception) {}
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (!isNoisyReceiverRegistered) return
+        try {
+            val context = AppContextHolder.appContext
+            context.unregisterReceiver(becomingNoisyReceiver)
+        } catch (_: Exception) {
+        } finally {
+            isNoisyReceiverRegistered = false
+        }
+    }
+
     private fun createExoPlayer(): ExoPlayer {
         val context = AppContextHolder.appContext
         val renderersFactory = YamRenderersFactory(context)
@@ -63,8 +163,7 @@ actual class AudioPlayer actual constructor() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
         
-        player.setAudioAttributes(audioAttributes, true)
-        player.setHandleAudioBecomingNoisy(true)
+        player.setAudioAttributes(audioAttributes, false)
         player.setWakeMode(C.WAKE_MODE_NETWORK)
         
         return player
@@ -207,6 +306,9 @@ actual class AudioPlayer actual constructor() {
                         player.volume = volumeToGain(currentVolume)
                     }
                     
+                    requestAudioFocus()
+                    registerNoisyReceiver()
+
                     player.play()
                     startCrossfade(player, crossfadeMs)
                     onPlaybackStartedListener?.invoke()
@@ -393,9 +495,12 @@ actual class AudioPlayer actual constructor() {
     actual fun pause() {
         try { exoPlayer?.pause() } catch (_: Exception) {}
         try { fadingExoPlayer?.pause() } catch (_: Exception) {}
+        unregisterNoisyReceiver()
     }
 
     actual fun resume() {
+        requestAudioFocus()
+        registerNoisyReceiver()
         try { exoPlayer?.play() } catch (_: Exception) {}
         try { fadingExoPlayer?.play() } catch (_: Exception) {}
     }
@@ -420,6 +525,9 @@ actual class AudioPlayer actual constructor() {
 
         currentMediaDataSource?.close()
         currentMediaDataSource = null
+
+        abandonAudioFocus()
+        unregisterNoisyReceiver()
 
         try {
             exoPlayer?.stop()
