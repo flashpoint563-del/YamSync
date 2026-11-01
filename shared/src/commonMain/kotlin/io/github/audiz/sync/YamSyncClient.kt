@@ -5,6 +5,7 @@ import io.github.audiz.currentTimeMillis
 import io.github.audiz.models.*
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -30,6 +31,11 @@ class YamSyncClient {
         install(ContentNegotiation) {
             json(jsonConfig)
         }
+        // Без таймаутов iOS ждал ответа до 60 секунд, прежде чем сообщить о проблеме
+        install(HttpTimeout) {
+            connectTimeoutMillis = 6_000
+            socketTimeoutMillis = 30_000
+        }
     }
 
     /** Проверить доступность удаленного устройства */
@@ -45,6 +51,7 @@ class YamSyncClient {
     /** Выполнить рукопожатие (Pairing) и авторизацию по токену */
     suspend fun pair(ip: String, port: Int, token: String, localDevice: YamSyncDevice): Result<YamSyncDevice> = runCatching {
         val response = httpClient.post("http://$ip:$port/yamsync/v1/pair") {
+            timeout { requestTimeoutMillis = 15_000 }
             header("X-YamSync-Token", token)
             contentType(ContentType.Application.Json)
             setBody(localDevice)

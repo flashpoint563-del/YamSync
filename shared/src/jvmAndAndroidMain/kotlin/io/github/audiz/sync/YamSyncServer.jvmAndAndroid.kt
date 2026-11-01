@@ -96,8 +96,7 @@ actual class YamSyncServer actual constructor(
             val input = BufferedInputStream(client.getInputStream())
             val output = BufferedOutputStream(client.getOutputStream())
 
-            val reader = BufferedReader(InputStreamReader(input, Charsets.UTF_8))
-            val requestLine = reader.readLine() ?: return
+            val requestLine = readHttpLine(input) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) return
 
@@ -109,7 +108,7 @@ actual class YamSyncServer actual constructor(
 
             val headers = mutableMapOf<String, String>()
             while (true) {
-                val headerLine = reader.readLine() ?: break
+                val headerLine = readHttpLine(input) ?: break
                 if (headerLine.isBlank()) break
                 val colon = headerLine.indexOf(':')
                 if (colon > 0) {
@@ -176,12 +175,7 @@ actual class YamSyncServer actual constructor(
                 }
 
                 "/yamsync/v1/pair" -> {
-                    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-                    val bodyStr = if (contentLength > 0) {
-                        val chars = CharArray(contentLength)
-                        reader.read(chars, 0, contentLength)
-                        String(chars)
-                    } else ""
+                    val bodyStr = readBody(input, headers)
 
                     if (bodyStr.isNotBlank()) {
                         try {
@@ -198,12 +192,7 @@ actual class YamSyncServer actual constructor(
 
                 "/yamsync/v1/manifest" -> {
                     if (method == "POST") {
-                        val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-                        val bodyStr = if (contentLength > 0) {
-                            val chars = CharArray(contentLength)
-                            reader.read(chars, 0, contentLength)
-                            String(chars)
-                        } else ""
+                        val bodyStr = readBody(input, headers)
 
                         if (bodyStr.isNotBlank()) {
                             try {
@@ -267,12 +256,7 @@ actual class YamSyncServer actual constructor(
                 }
 
                 "/yamsync/v1/merge" -> {
-                    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-                    val bodyStr = if (contentLength > 0) {
-                        val chars = CharArray(contentLength)
-                        reader.read(chars, 0, contentLength)
-                        String(chars)
-                    } else ""
+                    val bodyStr = readBody(input, headers)
 
                     try {
                         val payload = syncJson.decodeFromString(YamSyncMergePayload.serializer(), bodyStr)
@@ -301,6 +285,33 @@ actual class YamSyncServer actual constructor(
         } finally {
             try { client.close() } catch (_: Exception) {}
         }
+    }
+
+    /** Строка заголовка HTTP в байтах до CRLF (без буферизующего Reader, чтобы не «съесть» тело запроса). */
+    private fun readHttpLine(input: InputStream): String? {
+        val buf = ByteArrayOutputStream(128)
+        while (true) {
+            val b = input.read()
+            if (b == -1) return if (buf.size() == 0) null else buf.toString(Charsets.UTF_8.name())
+            if (b == '\n'.code) break
+            if (b != '\r'.code) buf.write(b)
+            if (buf.size() > 64 * 1024) return null
+        }
+        return buf.toString(Charsets.UTF_8.name())
+    }
+
+    /** Тело запроса ровно по Content-Length в байтах (раньше читалось символами и обрезалось на кириллице). */
+    private fun readBody(input: InputStream, headers: Map<String, String>): String {
+        val length = headers["content-length"]?.toIntOrNull() ?: 0
+        if (length <= 0 || length > 32 * 1024 * 1024) return ""
+        val bytes = ByteArray(length)
+        var read = 0
+        while (read < length) {
+            val n = input.read(bytes, read, length - read)
+            if (n < 0) break
+            read += n
+        }
+        return bytes.decodeToString(0, read)
     }
 
     private fun streamFile(output: BufferedOutputStream, file: File, rangeHeader: String?) {
