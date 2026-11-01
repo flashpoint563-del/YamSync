@@ -56,6 +56,8 @@ actual class AudioPlayer actual constructor() {
     private var crossfadeJob: Job? = null
     private var visualizer: Visualizer? = null
     private var equalizer: AndroidEqualizer? = null
+    // Эквалайзер уходящего при кроссфейде плеера: живёт, пока тот доигрывает, чтобы тембр не менялся
+    private var fadingEqualizer: AndroidEqualizer? = null
     private val playerScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
     init {
@@ -185,6 +187,7 @@ actual class AudioPlayer actual constructor() {
                     fadingMediaPlayer?.release()
                 } catch (_: Exception) {}
                 fadingMediaPlayer = null
+                releaseFadingEqualizer()
                 oldTempFile?.delete()
                 oldTempFile = null
 
@@ -224,6 +227,7 @@ actual class AudioPlayer actual constructor() {
                 fadingMediaPlayer?.release()
             } catch (_: Exception) {}
             fadingMediaPlayer = null
+            releaseFadingEqualizer()
             fadingMediaDataSource?.close()
             fadingMediaDataSource = null
 
@@ -248,6 +252,7 @@ actual class AudioPlayer actual constructor() {
                 fadingMediaPlayer?.release()
             } catch (_: Exception) {}
             fadingMediaPlayer = null
+            releaseFadingEqualizer()
             fadingMediaDataSource?.close()
             fadingMediaDataSource = currentMediaDataSource
             currentMediaDataSource = null
@@ -268,6 +273,10 @@ actual class AudioPlayer actual constructor() {
             mediaPlayer = newPlayer
 
             setupVisualizer(newPlayer.audioSessionId)
+            // Эквалайзер уходящего трека остаётся с ним до конца кроссфейда
+            releaseFadingEqualizer()
+            fadingEqualizer = equalizer
+            equalizer = null
             setupEqualizer(newPlayer.audioSessionId)
 
             val stepIntervalMs = 40L
@@ -280,8 +289,11 @@ actual class AudioPlayer actual constructor() {
                     val outFactor = kotlin.math.cos(t * (kotlin.math.PI / 2)).toFloat().coerceIn(0f, 1f)
                     val inFactor = kotlin.math.sin(t * (kotlin.math.PI / 2)).toFloat().coerceIn(0f, 1f)
 
-                    val outGain = volumeToGain(currentVolume * outFactor)
-                    val inGain = volumeToGain(currentVolume * inFactor)
+                    // Равномощный кроссфейд применяется к итоговому усилению: если пропустить
+                    // коэффициенты через кубическую кривую громкости, середина перехода проседает на ~6 дБ
+                    val baseGain = volumeToGain(currentVolume)
+                    val outGain = baseGain * outFactor
+                    val inGain = baseGain * inFactor
 
                     try { fadingMediaPlayer?.setVolume(outGain, outGain) } catch (_: Exception) {}
                     try { newPlayer.setVolume(inGain, inGain) } catch (_: Exception) {}
@@ -292,6 +304,7 @@ actual class AudioPlayer actual constructor() {
                     fadingMediaPlayer?.release()
                 } catch (_: Exception) {}
                 fadingMediaPlayer = null
+                releaseFadingEqualizer()
                 fadingMediaDataSource?.close()
                 fadingMediaDataSource = null
                 oldTempFile?.delete()
@@ -306,6 +319,7 @@ actual class AudioPlayer actual constructor() {
                 outgoing?.release()
             } catch (_: Exception) {}
             fadingMediaPlayer = null
+            releaseFadingEqualizer()
             fadingMediaDataSource?.close()
             fadingMediaDataSource = null
             oldTempFile?.delete()
@@ -648,6 +662,7 @@ actual class AudioPlayer actual constructor() {
             fadingMediaPlayer?.release()
         } catch (_: Exception) {}
         fadingMediaPlayer = null
+        releaseFadingEqualizer()
         fadingMediaDataSource?.close()
         fadingMediaDataSource = null
         oldTempFile?.delete()
@@ -740,6 +755,7 @@ actual class AudioPlayer actual constructor() {
         stop()
         releaseVisualizer()
         releaseEqualizer()
+        releaseFadingEqualizer()
         playerScope.cancel()
         onCompletionListener = null
         onInterruptionListener = null
@@ -763,7 +779,11 @@ actual class AudioPlayer actual constructor() {
     }
 
     private fun applyEqualizerState(state: EqualizerEngine.State) {
-        val eq = equalizer ?: return
+        equalizer?.let { applyEqualizerState(it, state) }
+        fadingEqualizer?.let { applyEqualizerState(it, state) }
+    }
+
+    private fun applyEqualizerState(eq: AndroidEqualizer, state: EqualizerEngine.State) {
         try {
             if (!state.isEnabled) {
                 eq.enabled = false
@@ -774,10 +794,12 @@ actual class AudioPlayer actual constructor() {
             val minMb = if (range != null && range.size >= 2) range[0] else -1500.toShort()
             val maxMb = if (range != null && range.size >= 2) range[1] else 1500.toShort()
 
+            // У системного эквалайзера нет предусилителя: запас по уровню вычитается из всех полос
+            val headroomDb = EqualizerEngine.headroomDb(state)
             val numBands = eq.numberOfBands
             for (b in 0 until numBands) {
                 val centerFreqHz = eq.getCenterFreq(b.toShort()) / 1000f
-                val targetGainDb = EqualizerEngine.calculateEffectiveGainDb(centerFreqHz)
+                val targetGainDb = EqualizerEngine.calculateEffectiveGainDb(centerFreqHz) - headroomDb
                 val targetMb = (targetGainDb * 100f).roundToInt().coerceIn(minMb.toInt(), maxMb.toInt()).toShort()
                 eq.setBandLevel(b.toShort(), targetMb)
             }
@@ -785,6 +807,16 @@ actual class AudioPlayer actual constructor() {
             eq.enabled = true
         } catch (e: Throwable) {
             println("AudioPlayer Android: Ошибка применения настроек эквалайзера: ${e.message}")
+        }
+    }
+
+    private fun releaseFadingEqualizer() {
+        try {
+            fadingEqualizer?.enabled = false
+            fadingEqualizer?.release()
+        } catch (_: Throwable) {
+        } finally {
+            fadingEqualizer = null
         }
     }
 

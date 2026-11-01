@@ -102,6 +102,9 @@ object EqualizerEngine {
     private val filterLock = Any()
     @Volatile private var sampleRate: Float = 44100f
 
+    // Общий предусилитель: опускает сигнал на запас по уровню, см. [headroomDb]
+    @Volatile private var preampLinear: Float = 1f
+
     private val hpfFilter = BiquadFilter()
     private val bandFilters = Array(10) { BiquadFilter() }
     private val lpfFilter = BiquadFilter()
@@ -111,6 +114,15 @@ object EqualizerEngine {
             loadSettings()
             recalculateFiltersLocked()
         }
+    }
+
+    /**
+     * Запас по уровню в дБ (≥ 0) для состояния [state]: на сколько опустить общий уровень,
+     * чтобы самая поднятая полоса не выводила громкие треки за 0 dBFS.
+     */
+    fun headroomDb(state: State): Float {
+        if (!state.isEnabled) return 0f
+        return max(0f, state.gains.maxOrNull() ?: 0f)
     }
 
     fun hasCutoffsActive(): Boolean {
@@ -263,9 +275,12 @@ object EqualizerEngine {
             hpfFilter.setBypass()
             for (f in bandFilters) f.setBypass()
             lpfFilter.setBypass()
+            preampLinear = 1f
             onStateChanged?.invoke(_state.value)
             return
         }
+
+        preampLinear = 10f.pow(-headroomDb(_state.value) / 20f)
 
         hpfFilter.configureHighPass(sampleRate, hpfHz)
 
@@ -289,6 +304,7 @@ object EqualizerEngine {
 
         synchronized(filterLock) {
             if (!isEnabled) return
+            val preamp = preampLinear
             var i = 0
             while (i < bytesRead - 3) {
                 val leftRaw = (buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)
@@ -309,8 +325,8 @@ object EqualizerEngine {
                 }
 
                 // 3. Срез ВЧ (LPF)
-                l = lpfFilter.processLeft(l)
-                r = lpfFilter.processRight(r)
+                l = lpfFilter.processLeft(l) * preamp
+                r = lpfFilter.processRight(r) * preamp
 
                 // Ограничение амплитуды (soft clamp)
                 val outL = (l * 32767f).roundToInt().coerceIn(-32768, 32767)
