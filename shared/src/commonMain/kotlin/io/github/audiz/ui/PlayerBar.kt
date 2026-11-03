@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
@@ -74,6 +75,8 @@ data class PlayerBarActions(
     val onOpenEqualizer: (() -> Unit)? = null,
     val onOpenQueue: (() -> Unit)? = null,
     val onExpandMobilePlayer: (() -> Unit)? = null,
+    val onDragExpandMobilePlayer: ((Float) -> Unit)? = null,
+    val onDragExpandEnd: (() -> Unit)? = null,
     val onResetWave: (() -> Unit)? = null,
 )
 
@@ -165,12 +168,22 @@ fun DesktopPlayerBar(
                         } else {
                             ContentTypeIcon(ContentType.TRACK, modifier = Modifier.size(16.dp))
                         }
-                        val fullTitle = if (state.artistName.isNotBlank()) "${state.artistName} — ${state.trackTitle}" else state.trackTitle
-                        BouncingMarqueeText(
-                            text = fullTitle,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Normal),
+                        
+                        androidx.compose.animation.AnimatedContent(
+                            targetState = Pair(state.trackTitle, state.artistName),
+                            transitionSpec = {
+                                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(400)) togetherWith 
+                                androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(400))
+                            },
                             modifier = Modifier.weight(1f, fill = false)
-                        )
+                        ) { (title, artist) ->
+                            val fullTitle = if (artist.isNotBlank()) "$artist — $title" else title
+                            BouncingMarqueeText(
+                                text = fullTitle,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Normal),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(2.dp))

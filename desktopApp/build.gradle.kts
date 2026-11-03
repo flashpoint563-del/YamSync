@@ -1,9 +1,16 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinJvm)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
 }
 
 dependencies {
@@ -15,7 +22,7 @@ dependencies {
 
 // Версия приложения: тег релиза из CI (APP_VERSION, вида v1.2.3) либо appVersion из gradle.properties
 val appVersion: String = providers.environmentVariable("APP_VERSION").orNull
-    ?.removePrefix("v")?.takeIf { Regex("""\d+(\.\d+){1,2}""").matches(it) }
+    ?.removePrefix("v")?.takeIf { Regex("""\d+(\.\d+){1,2}(-[a-zA-Z0-9.-]+)?""").matches(it) }
     ?: providers.gradleProperty("appVersion").get()
 
 compose.desktop {

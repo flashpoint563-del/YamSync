@@ -1530,6 +1530,18 @@ class PlaybackManager(
         val cleanArtist = nextTrack.artists.joinToString { it.name }.trim()
         val selectedQuality = getSelectedQuality()
 
+        // 🖼️ Фоновая предзагрузка обложки следующего и предыдущего треков для 60fps свайпа
+        nextTrack.coverUri?.let { uri ->
+            CoverImageLoader.preloadCover(uri, 600)
+        }
+        val loadedTracks = queueSource.getLoadedTracks()
+        if (loadedTracks.isNotEmpty()) {
+            val prevTrack = queueManager.getPrevFromList(trackId, loadedTracks)
+            prevTrack?.coverUri?.let { uri ->
+                CoverImageLoader.preloadCover(uri, 600)
+            }
+        }
+
         if (preloadedAudio?.trackId == targetTrackId && preloadedAudio?.quality == selectedQuality) {
             return
         }

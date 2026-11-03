@@ -6,6 +6,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -91,6 +94,9 @@ fun App() {
         buildAppColorScheme(isDarkTheme, selectedAccent)
     }
 
+    // 🎨 Настройка белого/темного текста системного статус-бара
+    io.github.audiz.ui.SetStatusBarDarkContent(darkContent = !isDarkTheme)
+
     MaterialTheme(colorScheme = colors) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -104,8 +110,13 @@ fun App() {
             var isMobilePlayerExpanded by remember {
                 mutableStateOf(loadAppConfig(AppConfigKeys.MOBILE_PLAYER_EXPANDED) == "true")
             }
+            var totalDragOffsetPx by remember { mutableStateOf(0f) }
+            var directionalDragPx by remember { mutableStateOf(0f) }
+
             fun updateMobilePlayerExpanded(expanded: Boolean) {
                 isMobilePlayerExpanded = expanded
+                totalDragOffsetPx = 0f
+                directionalDragPx = 0f
                 saveAppConfig(AppConfigKeys.MOBILE_PLAYER_EXPANDED, expanded.toString())
             }
 
@@ -266,82 +277,182 @@ fun App() {
                     }
                 } else null,
                 onExpandMobilePlayer = { updateMobilePlayerExpanded(true) },
+                onDragExpandMobilePlayer = { deltaY ->
+                    if (deltaY < 0f) {
+                        if (directionalDragPx > 0f) directionalDragPx = 0f
+                        directionalDragPx += deltaY
+                    } else if (deltaY > 0f) {
+                        if (directionalDragPx < 0f) directionalDragPx = 0f
+                        directionalDragPx += deltaY
+                    }
+                    totalDragOffsetPx += deltaY
+                },
+                onDragExpandEnd = {
+                    if (directionalDragPx <= -90f) {
+                        updateMobilePlayerExpanded(true)
+                    } else if (directionalDragPx >= 90f) {
+                        updateMobilePlayerExpanded(false)
+                    } else {
+                        totalDragOffsetPx = 0f
+                        directionalDragPx = 0f
+                    }
+                },
                 onResetWave = { searchViewModel.resetToDefaultWave() }
             )
 
-            Box(modifier = Modifier.fillMaxSize()) {
-            Scaffold(
-                bottomBar = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = if (isMobileUi) 10.dp else 16.dp)
-                            .padding(bottom = if (isMobileUi) 6.dp else 16.dp)
-                    ) {
-                        // 🌊 Надпись над плеером: Моя Волна (на десктопе сохраняем прежнее поведение, на мобильных название уже внутри мини-плеера)
-                        if (!isMobileUi && (searchViewModel.isWaveMode || (isFirstPage && searchViewModel.playerTrackId == null))) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 4.dp, end = 4.dp, bottom = 4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Waves,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                val thematicWaveTitle = searchViewModel.currentWaveTitle?.takeIf {
-                                    it.isNotBlank() && !it.equals("Моя Волна", ignoreCase = true)
-                                }
-                                Text(
-                                    text = if (thematicWaveTitle != null) {
-                                        "Моя Волна • $thematicWaveTitle"
-                                    } else {
-                                        "Моя Волна"
-                                    },
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                if (thematicWaveTitle != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .clip(CircleShape)
-                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                                            .clickable(
-                                                interactionSource = remember { MutableInteractionSource() },
-                                                indication = null,
-                                                onClick = { searchViewModel.resetToDefaultWave() }
-                                            )
-                                            .pointerHoverIcon(PointerIcon.Hand),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Close,
-                                            contentDescription = "Сбросить к персональной Волне",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val screenHeightPx = constraints.maxHeight.toFloat()
 
-                        PlayerBar(
-                            state = playerBarState,
-                            actions = playerBarActions
+                // 📐 Адаптивные процентные отступы от высоты экрана (1.0% сверху и снизу для изоляции от статус-бара и закруглений экрана)
+                val topPercentDp = with(density) { (screenHeightPx * 0.010f).toDp() }
+                val bottomPercentDp = with(density) { (screenHeightPx * 0.010f).toDp() }
+
+                val systemStatusTopDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+                val systemNavBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+                val totalTopMargin = systemStatusTopDp + topPercentDp + 8.dp
+                val totalBottomMargin = if (isMobileUi) systemNavBottomDp + bottomPercentDp + 8.dp else 16.dp
+
+                val miniPlayerAreaHeightDp = 68.dp + totalBottomMargin
+                val miniPlayerHeightPx = with(density) { miniPlayerAreaHeightDp.toPx() }
+                val collapsedY = (screenHeightPx - miniPlayerHeightPx).coerceAtLeast(0f)
+
+                val sheetAnimatableY = remember { androidx.compose.animation.core.Animatable(screenHeightPx) }
+                val isDraggingSheet = totalDragOffsetPx != 0f
+
+                // Базовая позиция для отсчета сдвига пальцем
+                val baseY = if (isMobilePlayerExpanded) 0f else collapsedY
+                
+                val targetY = when {
+                    isMobilePlayerExpanded && !isDraggingSheet -> 0f
+                    !isMobilePlayerExpanded && !isDraggingSheet -> collapsedY
+                    else -> (baseY + totalDragOffsetPx).coerceIn(0f, screenHeightPx)
+                }
+
+                LaunchedEffect(targetY, isDraggingSheet) {
+                    if (isDraggingSheet) {
+                        sheetAnimatableY.snapTo(targetY)
+                    } else {
+                        sheetAnimatableY.animateTo(
+                            targetValue = targetY,
+                            animationSpec = androidx.compose.animation.core.spring(
+                                dampingRatio = 0.75f,
+                                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                            )
                         )
                     }
                 }
-            ) { paddingValues ->
-                Box(modifier = Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp).padding(top = 16.dp)) {
+
+                // Мини-плеер отпружинивает, когда полноэкранный плеер пробивает collapsedY
+                val miniPlayerBounceY = (sheetAnimatableY.value - collapsedY).coerceAtLeast(0f)
+
+            Scaffold(
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                bottomBar = {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        // 🍷 Размытие в стиле жидкого стекла под мини-плеером (от низа экрана до середины высоты мини-плеера)
+                        val glassHeightDp = totalBottomMargin + 70.dp
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(glassHeightDp)
+                                .align(Alignment.BottomCenter)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { /* Некликабельная область для защиты от случайных нажатий по списку */ }
+                                )
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                                            MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                                            MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+                                        )
+                                    )
+                                )
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer { translationY = miniPlayerBounceY }
+                                .padding(horizontal = if (isMobileUi) 10.dp else 16.dp)
+                                .padding(bottom = totalBottomMargin)
+                        ) {
+                            // 🌊 Надпись над плеером: Моя Волна (на десктопе сохраняем прежнее поведение, на мобильных название уже внутри мини-плеера)
+                            if (!isMobileUi && (searchViewModel.isWaveMode || (isFirstPage && searchViewModel.playerTrackId == null))) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 4.dp, end = 4.dp, bottom = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Waves,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    val thematicWaveTitle = searchViewModel.currentWaveTitle?.takeIf {
+                                        it.isNotBlank() && !it.equals("Моя Волна", ignoreCase = true)
+                                    }
+                                    Text(
+                                        text = if (thematicWaveTitle != null) {
+                                            "Моя Волна • $thematicWaveTitle"
+                                        } else {
+                                            "Моя Волна"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (thematicWaveTitle != null) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                                                .clickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null,
+                                                    onClick = { searchViewModel.resetToDefaultWave() }
+                                                )
+                                                .pointerHoverIcon(PointerIcon.Hand),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Close,
+                                                contentDescription = "Сбросить к персональной Волне",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            PlayerBar(
+                                state = playerBarState,
+                                actions = playerBarActions
+                            )
+                        }
+                    }
+                }
+            ) { _ ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = totalTopMargin)
+                        .padding(horizontal = 16.dp)
+                ) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         if (!showTracksScreen) {
                             BackHandler(enabled = searchViewModel.searchResult != null) {
@@ -518,7 +629,8 @@ fun App() {
                                     onDeleteTrack = { trackId, trackTitle, artistName ->
                                         trackToDelete = TrackDeleteConfirmInfo(trackId, trackTitle, artistName)
                                     },
-                                    onAddToPlaylist = { track -> trackForPlaylistDialog = track }
+                                    onAddToPlaylist = { track -> trackForPlaylistDialog = track },
+                                    bottomPadding = miniPlayerAreaHeightDp + 12.dp
                                 )
                             }
                         }
@@ -644,7 +756,8 @@ fun App() {
                             } else null,
                             onArtistClick = { artistId, artistName ->
                                 searchViewModel.loadArtistTracks(artistId, artistName)
-                            }
+                            },
+                            bottomPadding = miniPlayerAreaHeightDp + 12.dp
                         )
                     }
                     } // closes outer Column
@@ -653,22 +766,25 @@ fun App() {
             // ==================================================
             // 📲 ПОЛНОЭКРАННЫЙ ПЛЕЕР ДЛЯ МОБИЛЬНЫХ (iOS / Android)
             // ==================================================
-            AnimatedVisibility(
-                visible = isMobileUi && isMobilePlayerExpanded,
-                enter = slideInVertically(
-                    initialOffsetY = { it },
-                    animationSpec = androidx.compose.animation.core.tween(280, easing = androidx.compose.animation.core.FastOutSlowInEasing)
-                ) + fadeIn(animationSpec = androidx.compose.animation.core.tween(200)),
-                exit = slideOutVertically(
-                    targetOffsetY = { it },
-                    animationSpec = androidx.compose.animation.core.tween(250, easing = androidx.compose.animation.core.FastOutLinearInEasing)
-                ) + fadeOut(animationSpec = androidx.compose.animation.core.tween(200))
-            ) {
-                MobileFullPlayerSheet(
-                    state = playerBarState,
-                    actions = playerBarActions,
-                    onDismiss = { updateMobilePlayerExpanded(false) }
-                )
+            if (isMobileUi) {
+                // Полноэкранный плеер монтируется только когда он раскрыт, перетаскивается или анимируется
+                val isSheetActive = isMobilePlayerExpanded || totalDragOffsetPx != 0f || sheetAnimatableY.value < collapsedY - 1f
+
+                if (isSheetActive) {
+                    // Плавное нелинейное затухание (Ease-Out) для бесшовного перехода в мини-плеер
+                    val progress = ((collapsedY - sheetAnimatableY.value) / 140f).coerceIn(0f, 1f)
+                    val sheetAlpha = 1f - (1f - progress) * (1f - progress)
+                    
+                    MobileFullPlayerSheet(
+                        state = playerBarState,
+                        actions = playerBarActions,
+                        onDismiss = { updateMobilePlayerExpanded(false) },
+                        modifier = Modifier.graphicsLayer {
+                            translationY = sheetAnimatableY.value.coerceAtMost(collapsedY)
+                            alpha = sheetAlpha
+                        }
+                    )
+                }
             }
 
             // ==================================================

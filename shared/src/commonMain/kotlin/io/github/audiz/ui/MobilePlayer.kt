@@ -2,11 +2,11 @@ package io.github.audiz.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -82,9 +83,38 @@ fun MobileMiniPlayerBar(
 
     val coverBitmap = rememberCoverBitmap(state.coverUri, 200)
 
+    val dragUpGestureModifier = Modifier.pointerInput(actions) {
+        detectVerticalDragGestures(
+            onVerticalDrag = { change, dragAmount ->
+                if (actions.onDragExpandMobilePlayer != null) {
+                    actions.onDragExpandMobilePlayer.invoke(dragAmount)
+                    change.consume()
+                } else if (dragAmount < -12f) {
+                    onExpand()
+                }
+            },
+            onDragEnd = {
+                if (actions.onDragExpandEnd != null) {
+                    actions.onDragExpandEnd.invoke()
+                } else {
+                    onExpand()
+                }
+            },
+            onDragCancel = {
+                actions.onDragExpandEnd?.invoke()
+            }
+        )
+    }
+
     ElevatedCard(
         modifier = modifier
             .fillMaxWidth()
+            .then(dragUpGestureModifier)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onExpand
+            )
             .border(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 8.dp),
@@ -100,18 +130,6 @@ fun MobileMiniPlayerBar(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectVerticalDragGestures { _, dragAmount ->
-                            if (dragAmount < -12f) {
-                                onExpand()
-                            }
-                        }
-                    }
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onExpand
-                    )
                     .pointerHoverIcon(PointerIcon.Hand),
                 contentAlignment = Alignment.Center
             ) {
@@ -149,18 +167,6 @@ fun MobileMiniPlayerBar(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .pointerInput(Unit) {
-                            detectVerticalDragGestures { _, dragAmount ->
-                                if (dragAmount < -12f) {
-                                    onExpand()
-                                }
-                            }
-                        }
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onExpand
-                        )
                         .pointerHoverIcon(PointerIcon.Hand),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -225,53 +231,61 @@ fun MobileMiniPlayerBar(
                     }
 
                     // 📝 Название трека и артист
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        val fullTitle = if (state.artistName.isNotBlank()) "${state.artistName} — ${state.trackTitle}" else state.trackTitle
-                        BouncingMarqueeText(
-                            text = fullTitle,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            modifier = Modifier.fillMaxWidth(),
-                            enableCopy = false
-                        )
-                        val isThematicWave = state.isWave && !state.waveTitle.isNullOrBlank() && !state.waveTitle.equals("Моя Волна", ignoreCase = true)
-                        if (state.isWave) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                val waveLabel = if (isThematicWave) "🌊 Моя Волна • ${state.waveTitle}" else "🌊 Моя Волна"
-                                Text(
-                                    text = waveLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                if (isThematicWave && actions.onResetWave != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(18.dp)
-                                            .clip(CircleShape)
-                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
-                                            .clickable(
-                                                interactionSource = remember { MutableInteractionSource() },
-                                                indication = null,
-                                                onClick = { actions.onResetWave.invoke() }
+                    androidx.compose.animation.AnimatedContent(
+                        targetState = Pair(state.trackTitle, state.artistName),
+                        transitionSpec = {
+                            androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(400)) togetherWith 
+                            androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(400))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { (title, artist) ->
+                        Column(
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            val fullTitle = if (artist.isNotBlank()) "$artist — $title" else title
+                            BouncingMarqueeText(
+                                text = fullTitle,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                modifier = Modifier.fillMaxWidth(),
+                                enableCopy = false
+                            )
+                            val isThematicWave = state.isWave && !state.waveTitle.isNullOrBlank() && !state.waveTitle.equals("Моя Волна", ignoreCase = true)
+                            if (state.isWave) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    val waveLabel = if (isThematicWave) "🌊 Моя Волна • ${state.waveTitle}" else "🌊 Моя Волна"
+                                    Text(
+                                        text = waveLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (isThematicWave && actions.onResetWave != null) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f))
+                                                .clickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null,
+                                                    onClick = { actions.onResetWave.invoke() }
+                                                )
+                                                .pointerHoverIcon(PointerIcon.Hand),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Close,
+                                                contentDescription = "Сбросить к обычной волне",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(11.dp)
                                             )
-                                            .pointerHoverIcon(PointerIcon.Hand),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Close,
-                                            contentDescription = "Сбросить к обычной волне",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(11.dp)
-                                        )
+                                        }
                                     }
                                 }
                             }
@@ -355,6 +369,7 @@ fun MobileFullPlayerSheet(
     state: PlayerBarState,
     actions: PlayerBarActions,
     onDismiss: () -> Unit,
+    initialYOffsetPx: Float = 0f,
     modifier: Modifier = Modifier
 ) {
     // Поддержка системной кнопки "Назад" (Android)
@@ -362,7 +377,15 @@ fun MobileFullPlayerSheet(
 
     val coroutineScope = rememberCoroutineScope()
     var dragOffsetY by remember { mutableStateOf(0f) }
-    val animatedOffsetY = remember { Animatable(0f) }
+    val animatedOffsetY = remember { Animatable(initialYOffsetPx) }
+
+    LaunchedEffect(initialYOffsetPx) {
+        if (initialYOffsetPx > 0f) {
+            animatedOffsetY.snapTo(initialYOffsetPx)
+        } else if (animatedOffsetY.value > 0f) {
+            animatedOffsetY.animateTo(0f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
+        }
+    }
 
     var isDraggingScrubber by remember { mutableStateOf(false) }
     var scrubberProgress by remember { mutableStateOf(0f) }
@@ -380,36 +403,171 @@ fun MobileFullPlayerSheet(
     } else 0f
 
     val coverBitmap = rememberCoverBitmap(state.coverUri, 600)
-    val ambilightPalette = remember(coverBitmap) { extractAmbilightPalette(coverBitmap) }
+    val ambilightPalette = remember(coverBitmap, state.coverUri) { extractAmbilightPalette(coverBitmap, state.coverUri) }
 
-    val infiniteTransition = rememberInfiniteTransition()
-    val breathingAlpha by infiniteTransition.animateFloat(
-        initialValue = if (state.isPlaying && !state.isPaused) 0.65f else 0.50f,
-        targetValue = if (state.isPlaying && !state.isPaused) 0.90f else 0.50f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        )
-    )
-    val breathingScale by infiniteTransition.animateFloat(
-        initialValue = if (state.isPlaying && !state.isPaused) 1.00f else 1.00f,
-        targetValue = if (state.isPlaying && !state.isPaused) 1.04f else 1.00f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        )
+    val isPlayingNow = state.isPlaying && !state.isPaused
+    val playPauseScale by animateFloatAsState(
+        targetValue = if (isPlayingNow) 1.00f else 0.85f,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "coverPlayPauseScale"
     )
 
-    val dismissDragModifier = Modifier.pointerInput(Unit) {
+    val coverOffsetX = remember { Animatable(0f) }
+
+    val coverGestureModifier = Modifier.pointerInput(actions) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            val pointerId = down.id
+            var totalDragX = 0f
+            var totalDragY = 0f
+            var dragDirection = 0 // 0 = undecided, 1 = horizontal track swipe, 2 = vertical sheet dismiss
+            val touchSlop = viewConfiguration.touchSlop
+            var isAnyChangeConsumed = false
+
+            do {
+                val event = awaitPointerEvent()
+                val pointerChange = event.changes.firstOrNull { it.id == pointerId } ?: break
+                if (pointerChange.isConsumed) {
+                    isAnyChangeConsumed = true
+                }
+
+                if (pointerChange.pressed) {
+                    val dragAmount = pointerChange.positionChange()
+                    totalDragX += dragAmount.x
+                    totalDragY += dragAmount.y
+
+                    if (dragDirection == 0) {
+                        val absX = kotlin.math.abs(totalDragX)
+                        val absY = kotlin.math.abs(totalDragY)
+                        if (absX > touchSlop || absY > touchSlop) {
+                            if (absX > absY) {
+                                dragDirection = 1
+                            } else if (totalDragY > 0f) {
+                                dragDirection = 2
+                            }
+                        }
+                    }
+
+                    if (dragDirection == 1) {
+                        pointerChange.consume()
+                        coroutineScope.launch {
+                            coverOffsetX.snapTo(coverOffsetX.value + dragAmount.x)
+                        }
+                    } else if (dragDirection == 2) {
+                        pointerChange.consume()
+                        if (actions.onDragExpandMobilePlayer != null) {
+                            actions.onDragExpandMobilePlayer.invoke(dragAmount.y)
+                        } else if (dragAmount.y > 0f || dragOffsetY > 0f) {
+                            dragOffsetY = (dragOffsetY + dragAmount.y).coerceAtLeast(0f)
+                        }
+                    }
+                } else {
+                    break
+                }
+            } while (true)
+
+            if (dragDirection == 1) {
+                val currentOffset = coverOffsetX.value
+                val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                val swipeThreshold = widthPx * 0.22f
+
+                if (currentOffset < -swipeThreshold && actions.onNext != null) {
+                    coroutineScope.launch {
+                        // 1. Максимально быстрый выезд без замедлений (LinearEasing)
+                        coverOffsetX.animateTo(
+                            targetValue = -widthPx * 1.2f,
+                            animationSpec = tween(120, easing = androidx.compose.animation.core.LinearEasing)
+                        )
+                        coverOffsetX.snapTo(widthPx * 1.2f)
+                        
+                        // 2. Мгновенно переключаем трек
+                        val onNext = actions.onNext
+                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                            onNext.invoke()
+                        }
+                        
+                        // 3. Динамическая пауза: даем UI обновиться
+                        kotlinx.coroutines.delay(40L)
+                        
+                        // 4. Плавно выкатываем новую обложку
+                        coverOffsetX.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+                        )
+                    }
+                } else if (currentOffset > swipeThreshold && actions.onPrev != null) {
+                    coroutineScope.launch {
+                        coverOffsetX.animateTo(
+                            targetValue = widthPx * 1.2f,
+                            animationSpec = tween(120, easing = androidx.compose.animation.core.LinearEasing)
+                        )
+                        coverOffsetX.snapTo(-widthPx * 1.2f)
+                        
+                        val onPrev = actions.onPrev
+                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                            onPrev.invoke()
+                        }
+                        
+                        kotlinx.coroutines.delay(40L)
+                        
+                        coverOffsetX.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+                        )
+                    }
+                } else {
+                    coroutineScope.launch {
+                        coverOffsetX.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+                        )
+                    }
+                }
+            } else if (dragDirection == 2) {
+                if (actions.onDragExpandEnd != null) {
+                    actions.onDragExpandEnd.invoke()
+                } else if (dragOffsetY > 120f) {
+                    onDismiss()
+                } else {
+                    coroutineScope.launch {
+                        animatedOffsetY.snapTo(dragOffsetY)
+                        dragOffsetY = 0f
+                        animatedOffsetY.animateTo(0f, tween(150, easing = FastOutSlowInEasing))
+                    }
+                }
+            } else {
+                val absX = kotlin.math.abs(totalDragX)
+                val absY = kotlin.math.abs(totalDragY)
+                if (absX < touchSlop && absY < touchSlop) {
+                    val visualizerThresholdY = size.height - 100.dp.toPx()
+                    if (!isAnyChangeConsumed && down.position.y >= visualizerThresholdY) {
+                        actions.onOpenEqualizer?.invoke()
+                    } else if (!isAnyChangeConsumed) {
+                        actions.onPlayPause()
+                    }
+                }
+            }
+        }
+    }
+
+    val dismissDragModifier = Modifier.pointerInput(actions) {
         detectVerticalDragGestures(
             onVerticalDrag = { change, dragAmount ->
-                if (dragAmount > 0 || dragOffsetY > 0) {
+                if (actions.onDragExpandMobilePlayer != null) {
+                    actions.onDragExpandMobilePlayer.invoke(dragAmount)
+                    change.consume()
+                } else if (dragAmount > 0f || dragOffsetY > 0f) {
                     dragOffsetY = (dragOffsetY + dragAmount).coerceAtLeast(0f)
                     change.consume()
                 }
             },
             onDragEnd = {
-                if (dragOffsetY > 120f) {
+                if (actions.onDragExpandEnd != null) {
+                    actions.onDragExpandEnd.invoke()
+                } else if (dragOffsetY > 120f) {
                     onDismiss()
                 } else {
                     coroutineScope.launch {
@@ -420,7 +578,11 @@ fun MobileFullPlayerSheet(
                 }
             },
             onDragCancel = {
-                dragOffsetY = 0f
+                if (actions.onDragExpandEnd != null) {
+                    actions.onDragExpandEnd.invoke()
+                } else {
+                    dragOffsetY = 0f
+                }
             }
         )
     }
@@ -428,6 +590,7 @@ fun MobileFullPlayerSheet(
     Surface(
         modifier = modifier
             .fillMaxSize()
+            .then(dismissDragModifier)
             .offset { IntOffset(0, (dragOffsetY + animatedOffsetY.value).roundToInt()) },
         color = MaterialTheme.colorScheme.surface
     ) {
@@ -454,9 +617,7 @@ fun MobileFullPlayerSheet(
             // 1. ВЕРХНЯЯ ШАПКА: Drag Handle + Навигация
             // ==========================================
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(dismissDragModifier),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Полоска-индикатор для свайпа (Drag Handle)
@@ -557,35 +718,49 @@ fun MobileFullPlayerSheet(
             // ==========================================
             // 2. ЦЕНТР: Большая обложка с мягким Ambilight-свечением (как на референсе с iOS)
             // ==========================================
+            val glowPadding = 24.dp
             Box(
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .padding(vertical = 14.dp)
+                    .padding(vertical = 4.dp)
                     .aspectRatio(1f)
-                    .fillMaxWidth(0.80f)
-                    .then(dismissDragModifier),
+                    .fillMaxWidth(0.85f)
+                    .graphicsLayer {
+                        scaleX = playPauseScale
+                        scaleY = playPauseScale
+                        translationX = coverOffsetX.value
+
+                        val widthPx = size.width
+                        val dragFraction = if (widthPx > 0f) (coverOffsetX.value / widthPx).coerceIn(-1f, 1f) else 0f
+                        rotationZ = dragFraction * 7f
+                        alpha = 1f - (kotlin.math.abs(dragFraction) * 0.20f).coerceIn(0f, 0.3f)
+                    }
+                    .then(coverGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
-                // 🌟 1. Фоновый Ambilight-ореол за обложкой (как на референсе с iOS)
+                // 🌟 1. Фоновый Ambilight-ореол за обложкой
                 val glowLeft = ambilightPalette?.left ?: MaterialTheme.colorScheme.primary
                 val glowRight = ambilightPalette?.right ?: MaterialTheme.colorScheme.secondary
 
                 Canvas(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    val w = size.width
-                    val h = size.height
-                    if (w <= 0f || h <= 0f) return@Canvas
+                    val totalW = size.width
+                    val totalH = size.height
+                    if (totalW <= 0f || totalH <= 0f) return@Canvas
 
-                    val maxDistance = 46.dp.toPx()
+                    val maxD = glowPadding.toPx()
+                    val cardW = totalW - 2 * maxD
+                    val cardH = totalH - 2 * maxD
+                    if (cardW <= 0f || cardH <= 0f) return@Canvas
+
                     val baseCornerRadius = 24.dp.toPx()
-                    val steps = 24
+                    val steps = 20
 
                     for (i in steps downTo 1) {
-                        val d = (i.toFloat() / steps) * maxDistance
-                        val factor = d / maxDistance
-                        // Гауссов колоколообразный спад e^(-2.2 * factor^2)
-                        val alpha = (breathingAlpha * 0.13f * exp(-2.2f * factor * factor)).coerceIn(0f, 1f)
+                        val factor = i.toFloat() / steps
+                        val d = factor * maxD
+                        val alpha = (0.24f * exp(-2.4f * factor * factor)).coerceIn(0f, 1f)
 
                         drawRoundRect(
                             brush = Brush.horizontalGradient(
@@ -593,11 +768,11 @@ fun MobileFullPlayerSheet(
                                     glowLeft.copy(alpha = alpha),
                                     glowRight.copy(alpha = alpha)
                                 ),
-                                startX = -d,
-                                endX = w + d
+                                startX = maxD - d,
+                                endX = maxD + cardW + d
                             ),
-                            topLeft = Offset(-d, -d),
-                            size = Size(w + 2 * d, h + 2 * d),
+                            topLeft = Offset(maxD - d, maxD - d),
+                            size = Size(cardW + 2 * d, cardH + 2 * d),
                             cornerRadius = CornerRadius(baseCornerRadius + d, baseCornerRadius + d)
                         )
                     }
@@ -607,6 +782,7 @@ fun MobileFullPlayerSheet(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .padding(glowPadding)
                         .clip(RoundedCornerShape(24.dp))
                         .background(
                             Brush.radialGradient(
@@ -621,11 +797,6 @@ fun MobileFullPlayerSheet(
                             1.dp,
                             MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
                             RoundedCornerShape(24.dp)
-                        )
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = actions.onPlayPause
                         )
                         .pointerHoverIcon(PointerIcon.Hand),
                     contentAlignment = Alignment.Center
@@ -680,28 +851,35 @@ fun MobileFullPlayerSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(
+                androidx.compose.animation.AnimatedContent(
+                    targetState = Pair(state.trackTitle, state.artistName),
+                    transitionSpec = {
+                        androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(400)) togetherWith 
+                        androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(400))
+                    },
                     modifier = Modifier.weight(1f).padding(end = 12.dp)
-                ) {
-                    BouncingMarqueeText(
-                        text = state.trackTitle,
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 22.sp
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = if (state.artistName.isNotBlank()) state.artistName else "Яндекс Музыка",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 15.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                ) { (title, artist) ->
+                    Column {
+                        BouncingMarqueeText(
+                            text = title,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 22.sp
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (artist.isNotBlank()) artist else "Яндекс Музыка",
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 15.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
                 // Кнопка Лайк (48 dp)
@@ -1083,12 +1261,23 @@ data class AmbilightPalette(
     val center: Color
 )
 
+private val ambilightCacheLock = Any()
+private val ambilightPaletteCache = mutableMapOf<androidx.compose.ui.graphics.ImageBitmap, AmbilightPalette>()
+
 /**
  * 🎨 Безопасное извлечение насыщенных (vibrant) цветов из обложки альбома.
  * Игнорирует белые/черные/серые рамки и находит истинные акцентные цвета арта.
  */
-fun extractAmbilightPalette(bitmap: androidx.compose.ui.graphics.ImageBitmap?): AmbilightPalette? {
+fun extractAmbilightPalette(
+    bitmap: androidx.compose.ui.graphics.ImageBitmap?,
+    coverUri: String? = null
+): AmbilightPalette? {
     if (bitmap == null) return null
+    if (!coverUri.isNullOrBlank()) {
+        CoverImageLoader.getCachedPalette(coverUri)?.let { return it }
+    }
+    io.github.audiz.synchronized(ambilightCacheLock) { ambilightPaletteCache[bitmap] }?.let { return it }
+
     return runCatching {
         val pixelMap = bitmap.toPixelMap()
         val w = pixelMap.width
@@ -1131,11 +1320,15 @@ fun extractAmbilightPalette(bitmap: androidx.compose.ui.graphics.ImageBitmap?): 
         val rightColor = findVibrantInRegion(w / 2, w)
         val centerColor = pixelMap[w / 2, h / 2]
 
-        AmbilightPalette(
+        val palette = AmbilightPalette(
             left = leftColor,
             right = rightColor,
             center = centerColor
         )
+        io.github.audiz.synchronized(ambilightCacheLock) {
+            ambilightPaletteCache[bitmap] = palette
+        }
+        palette
     }.getOrNull()
 }
 

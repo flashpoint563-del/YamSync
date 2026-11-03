@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import io.github.audiz.AndroidFilePickerBridge
 import io.github.audiz.App // Импортируем точку входа из вашего модуля :shared
@@ -37,6 +38,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // 🔥 Инициализируем контекст для SharedPreferences (сохранение cookie)
         AppContextHolder.appContext = applicationContext

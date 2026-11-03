@@ -25,6 +25,7 @@ import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.audiz.models.FullTrackInfo
 import io.github.audiz.models.isLocal
@@ -75,6 +76,7 @@ fun ArtistTracksList(
     onRemoveFromPlaylist: ((FullTrackInfo) -> Unit)? = null,
     onArtistClick: ((artistId: String, artistName: String) -> Unit)? = null,
     isTrackInPlaylist: ((FullTrackInfo) -> Boolean)? = null,
+    bottomPadding: Dp = 100.dp,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -218,7 +220,7 @@ fun ArtistTracksList(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 16.dp),
+                    contentPadding = PaddingValues(bottom = bottomPadding),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(tracks, key = { index, track -> "${track.id}_$index" }) { index, track ->

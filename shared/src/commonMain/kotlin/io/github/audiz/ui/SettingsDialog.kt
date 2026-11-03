@@ -157,8 +157,9 @@ fun SettingsDialog(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
+                    .navigationBarsPadding()
                     .padding(horizontal = horizontalCardPadding)
-                    .padding(top = 8.dp, bottom = 76.dp)
+                    .padding(top = 8.dp, bottom = 8.dp)
                     .offset { IntOffset(0, animatedOffsetY.toInt()) }
                     .animateEnterExit(
                         enter = slideInVertically { it / 2 },

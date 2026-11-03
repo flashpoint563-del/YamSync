@@ -6,6 +6,8 @@ import io.github.audiz.api.MusicRepository
 import io.github.audiz.getLocalCoverArtUrl
 import io.github.audiz.loadLocalCoverBytes
 import io.github.audiz.synchronized
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.decodeToImageBitmap
 
@@ -15,6 +17,7 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
 object CoverImageLoader {
     private val cacheLock = Any()
     private val memoryCache = mutableMapOf<String, ImageBitmap>()
+    private val paletteCache = mutableMapOf<String, AmbilightPalette>()
     var repository: MusicRepository? = null
 
     /**
@@ -36,6 +39,15 @@ object CoverImageLoader {
         return clean
     }
 
+    fun getCachedPalette(coverUri: String?): AmbilightPalette? {
+        if (coverUri.isNullOrBlank()) return null
+        val trimmed = coverUri.trim()
+        synchronized(cacheLock) {
+            paletteCache[trimmed] ?: formatCoverUrl(trimmed, 400)?.let { paletteCache[it] }
+        }?.let { return it }
+        return null
+    }
+
     /**
      * Асинхронная загрузка обложки трека с кэшированием в оперативной памяти
      */
@@ -52,8 +64,12 @@ object CoverImageLoader {
             if (bytes != null && bytes.isNotEmpty()) {
                 return try {
                     val bitmap = bytes.decodeToImageBitmap()
+                    val palette = extractAmbilightPalette(bitmap, trimmed)
                     synchronized(cacheLock) {
                         memoryCache[trimmed] = bitmap
+                        if (palette != null) {
+                            paletteCache[trimmed] = palette
+                        }
                     }
                     bitmap
                 } catch (e: Exception) {
@@ -76,9 +92,14 @@ object CoverImageLoader {
         return withContext(DispatcherIO) {
             try {
                 val bitmap = bytes.decodeToImageBitmap()
+                val palette = extractAmbilightPalette(bitmap, trimmed)
                 synchronized(cacheLock) {
                     memoryCache[trimmed] = bitmap
                     memoryCache[url] = bitmap
+                    if (palette != null) {
+                        paletteCache[trimmed] = palette
+                        paletteCache[url] = palette
+                    }
                 }
                 bitmap
             } catch (e: Exception) {
@@ -87,15 +108,53 @@ object CoverImageLoader {
             }
         }
     }
+
+    /**
+     * Быстрая мгновенная проверка наличия обложки в оперативном кэше (без I/O операций).
+     */
+    fun getCached(coverUri: String?, size: Int = 400): ImageBitmap? {
+        if (coverUri.isNullOrBlank()) return null
+        val trimmed = coverUri.trim()
+        synchronized(cacheLock) {
+            memoryCache[trimmed] ?: formatCoverUrl(trimmed, size)?.let { memoryCache[it] }
+        }?.let { return it }
+        return null
+    }
+
+    /**
+     * Предварительная фоновая загрузка обложки трека в память (например для следующего трека в очереди).
+     */
+    fun preloadCover(coverUri: String?, size: Int = 400) {
+        if (coverUri.isNullOrBlank()) return
+        if (getCached(coverUri, size) != null) return
+        CoroutineScope(DispatcherIO).launch {
+            loadCover(coverUri, size)
+        }
+    }
 }
 
 /**
- * 🎨 Composable-хэлпер для автоматической загрузки и реактивного обновления ImageBitmap
+ * 🎨 Composable-хэлпер для автоматической загрузки и реактивного обновления ImageBitmap.
+ * Сохраняет предыдущее изображение до готовности нового для предотвращения мерцания (flicker-free).
  */
 @androidx.compose.runtime.Composable
 fun rememberCoverBitmap(coverUri: String?, size: Int = 400): ImageBitmap? {
-    val bitmapState = androidx.compose.runtime.produceState<ImageBitmap?>(initialValue = null, key1 = coverUri, key2 = size) {
-        value = CoverImageLoader.loadCover(coverUri, size)
+    val initialBitmap = androidx.compose.runtime.remember(coverUri, size) {
+        CoverImageLoader.getCached(coverUri, size)
+    }
+    val bitmapState = androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(initialBitmap)
+    }
+
+    androidx.compose.runtime.LaunchedEffect(coverUri, size) {
+        if (initialBitmap != null) {
+            bitmapState.value = initialBitmap
+        } else if (!coverUri.isNullOrBlank()) {
+            val loaded = CoverImageLoader.loadCover(coverUri, size)
+            if (loaded != null) {
+                bitmapState.value = loaded
+            }
+        }
     }
     return bitmapState.value
 }

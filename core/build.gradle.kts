@@ -1,6 +1,7 @@
 import java.io.File
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -18,7 +19,7 @@ val localProps = Properties().apply {
 
 // Версия приложения: тег релиза из CI (APP_VERSION, вида v1.2.3) либо appVersion из gradle.properties
 val appVersion: String = providers.environmentVariable("APP_VERSION").orNull
-    ?.removePrefix("v")?.takeIf { Regex("""\d+(\.\d+){1,2}""").matches(it) }
+    ?.removePrefix("v")?.takeIf { Regex("""\d+(\.\d+){1,2}(-[a-zA-Z0-9.-]+)?""").matches(it) }
     ?: providers.gradleProperty("appVersion").get()
 
 val generateSecurityConfig = tasks.register("generateSecurityConfig") {
@@ -88,8 +89,16 @@ val generateBuildInfo = tasks.register("generateBuildInfo") {
 
 kotlin {
     applyDefaultHierarchyTemplate()
-    jvm()
-    androidTarget()
+    jvm {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_21)
+        }
+    }
+    androidTarget {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_21)
+        }
+    }
     iosArm64()
     iosSimulatorArm64()
 
@@ -131,11 +140,21 @@ tasks.matching { it.name.startsWith("compile") }.configureEach {
     dependsOn(generateBuildInfo)
 }
 
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
+}
+
 android {
     namespace = "io.github.audiz.core"
     compileSdk = 37
     defaultConfig {
         minSdk = 24
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 }
 

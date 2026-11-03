@@ -5,9 +5,10 @@
 ---
 
 ### 📜 Что нового в форке?
-- **🎛️ ViPER Bass & Dynamic Bass:** психоакустическая обработка низких частот (Bass Exciter) и динамический бас.
+- **🎛️ [ViPER Bass](https://github.com/alienware377/RootlessViPER4Android/blob/viper-extras/vst/src/BassExciterDsp.h) & [Dynamic Bass](https://github.com/alienware377/RootlessViPER4Android/blob/viper-extras/vst/src/DynamicBassDsp.h):** психоакустическая обработка низких частот (Bass Exciter) и динамический бас.
 - **🛡️ Peak Limiter:** встроенный лимитер и софт-клиппер для защиты динамиков от искажений и перегруза.
 - **🚀 Media3 ExoPlayer на Android:** полный переход с `MediaPlayer` на ExoPlayer с нативной поддержкой DSP и плавным кроссфейдом.
+- **✨ Анимации и жесты:** плавная анимация смены названий треков, интерактивное отзывчивое вытягивание полноэкранного плеера и свайпы обложек для перехода между треками.
 
 Полный список изменений и историю всех версий смотрите в документе **[CHANGELOG.md](CHANGELOG.md)**.
 
@@ -354,6 +355,16 @@ YamSync нативно интегрирован в мультимедийные 
 - 🤝 Живое общение пользователей YamSync
 
 👉 **Ссылка на чат:** [https://t.me/+5PT1eAkb7CxjYzNi](https://t.me/+5PT1eAkb7CxjYzNi)
+
+---
+
+## 🤝 Атрибуция и благодарности (Credits & Acknowledgments)
+
+При разработке DSP-движка и алгоритмов аудиообработки YamSync использовались наработки, математические модели и архитектурные идеи следующих замечательных проектов:
+
+- **[ViPER4Android](https://forum.xda-developers.com/c/viper4android.2456/)** (*Euphony / ViPER's Audio*) — легендарный проект звукового процессора для Android, оригинальные алгоритмы психоакустической обработки низких частот (**ViPER Bass Exciter**) и динамического баса (**ViPER Dynamic System**).
+- **[RootlessViPER4Android](https://github.com/alienware377/RootlessViPER4Android/tree/viper-extras)** (*[@alienware377](https://github.com/alienware377)*) — C++ VST-реализация фильтров психоакустического баса [`BassExciterDsp.h`](https://github.com/alienware377/RootlessViPER4Android/blob/viper-extras/vst/src/BassExciterDsp.h) и динамического баса [`DynamicBassDsp.h`](https://github.com/alienware377/RootlessViPER4Android/blob/viper-extras/vst/src/DynamicBassDsp.h), послужившая основой для переноса DSP-алгоритмов на чистый Kotlin Multiplatform.
+- **[RootlessJamesDSP](https://github.com/jamesmcm/RootlessJamesDSP)** (*[@jamesmcm](https://github.com/jamesmcm)*) — архитектурные концепции и опыт интеграции сложных DSP-эффекторов в пользовательское пространство Android без использования Root-прав.
 
 ---
 

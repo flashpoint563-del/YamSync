@@ -240,8 +240,9 @@ actual class AudioPlayer actual constructor() {
                     val outFactor = cos(t * (PI / 2)).toFloat().coerceIn(0f, 1f)
                     val inFactor = sin(t * (PI / 2)).toFloat().coerceIn(0f, 1f)
 
-                    val outGain = volumeToGain(currentVolume * outFactor)
-                    val inGain = volumeToGain(currentVolume * inFactor)
+                    val baseGain = volumeToGain(currentVolume)
+                    val outGain = baseGain * outFactor
+                    val inGain = baseGain * inFactor
 
                     try { fadingExoPlayer?.volume = outGain } catch (_: Exception) {}
                     try { newPlayer.volume = inGain } catch (_: Exception) {}
@@ -517,7 +518,6 @@ actual class AudioPlayer actual constructor() {
             fadingExoPlayer?.release()
         } catch (_: Exception) {}
         fadingExoPlayer = null
-        
         fadingMediaDataSource?.close()
         fadingMediaDataSource = null
         oldTempFile?.delete()
@@ -618,5 +618,10 @@ actual class AudioPlayer actual constructor() {
         onErrorListener = null
         onPlaybackStartedListener = null
         onNearEndListener = null
+    }
+
+    private fun volumeToGain(volume: Float): Float {
+        val v = volume.coerceIn(0f, 1f)
+        return v * v * v
     }
 }

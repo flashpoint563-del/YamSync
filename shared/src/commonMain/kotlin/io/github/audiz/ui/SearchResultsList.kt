@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.audiz.models.YandexMusicResponse
 import io.github.audiz.models.TypedResult
@@ -56,6 +57,7 @@ fun SearchResultsList(
     isTrackInPlaylist: ((FullTrackInfo) -> Boolean)? = null,
     onDeleteTrack: ((trackId: String, trackTitle: String, artistName: String) -> Unit)? = null,
     onAddToPlaylist: ((FullTrackInfo) -> Unit)? = null,
+    bottomPadding: Dp = 100.dp,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -96,7 +98,7 @@ fun SearchResultsList(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 16.dp),
+            contentPadding = PaddingValues(bottom = bottomPadding),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(searchItems) { item ->
