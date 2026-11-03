@@ -142,6 +142,15 @@ object EqualizerEngine {
         }
     }
 
+    /**
+     * Запас по уровню в дБ (≥ 0) для состояния [state]: на сколько опустить общий уровень,
+     * чтобы самая поднятая полоса не выводила громкие треки за 0 dBFS.
+     */
+    fun headroomDb(state: State): Float {
+        if (!state.isEnabled) return 0f
+        return max(0f, state.gains.maxOrNull() ?: 0f)
+    }
+
     fun hasCutoffsActive(): Boolean {
         return isEnabled && (hpfHz > 21f || lpfHz < 19900f)
     }

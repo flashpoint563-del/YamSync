@@ -37,8 +37,9 @@ internal fun sanitizeErrorMessage(err: String): String {
     if (lower.contains("connection refused") || lower.contains("econnrefused")) {
         return "Устройство отклонило подключение. Убедитесь, что на втором устройстве открыт YamSync и запущена раздача."
     }
-    if (lower.contains("timed out") || lower.contains("etimedout")) {
-        return "Превышено время ожидания. Проверьте, что оба устройства подключены к одной сети Wi-Fi."
+    if (lower.contains("timed out") || lower.contains("etimedout") || lower.contains("timeout has expired") || lower.contains("timeout")) {
+        return "Устройство не отвечает. Проверьте, что на нём открыт YamSync с QR-кодом («Устройства» → «Показать QR») " +
+            "и оба устройства в одной сети Wi-Fi. Если адрес компьютера сменился, отсканируйте QR-код заново."
     }
     return err.take(250)
 }

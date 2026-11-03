@@ -300,6 +300,9 @@ final class TapDSPContext {
     let b9 = SwiftBiquadFilter()
     let lpf = SwiftBiquadFilter()
 
+    // Общий предусилитель: опускает сигнал на самый большой подъём полос, чтобы эквалайзер не перегружал
+    var preamp: Float = 1.0
+
     // Моно-сэмплы текущего блока для спектроанализатора; размер задаётся в tapPrepareCallback
     var monoBuffer: [Float] = []
     // Последовательная очередь анализа спектра: FFT не выполняется в потоке обработки аудио
@@ -379,8 +382,12 @@ final class TapDSPContext {
             b8.setBypass(); b8.reset()
             b9.setBypass(); b9.reset()
             lpf.setBypass(); lpf.reset()
+            preamp = 1.0
             return
         }
+
+        let headroomDb = max(0, max(g0, g1, g2, g3, g4, g5, g6, g7, g8, g9))
+        preamp = powf(10, -headroomDb / 20)
 
         let sr = sampleRate > 8000 ? sampleRate : 44100.0
         hpf.configureHighPass(sampleRate: sr, cutoffFreq: hpfHz)
@@ -482,6 +489,7 @@ private func tapProcessCallback(
     let b8 = context.b8
     let b9 = context.b9
     let lpf = context.lpf
+    let preamp = context.preamp
 
     if context.monoBuffer.count < frameCount {
         context.monoBuffer = [Float](repeating: 0, count: frameCount)
@@ -517,8 +525,8 @@ private func tapProcessCallback(
                 left = b9.processLeft(left)
                 right = b9.processRight(right)
 
-                left = lpf.processLeft(left)
-                right = lpf.processRight(right)
+                left = lpf.processLeft(left) * preamp
+                right = lpf.processRight(right) * preamp
 
                 left = min(max(left, -1.0), 1.0)
                 right = min(max(right, -1.0), 1.0)
@@ -559,8 +567,8 @@ private func tapProcessCallback(
                 left = b9.processLeft(left)
                 right = b9.processRight(right)
 
-                left = lpf.processLeft(left)
-                right = lpf.processRight(right)
+                left = lpf.processLeft(left) * preamp
+                right = lpf.processRight(right) * preamp
 
                 left = min(max(left, -1.0), 1.0)
                 right = min(max(right, -1.0), 1.0)
@@ -587,7 +595,7 @@ private func tapProcessCallback(
                 mono = b7.processLeft(mono)
                 mono = b8.processLeft(mono)
                 mono = b9.processLeft(mono)
-                mono = lpf.processLeft(mono)
+                mono = lpf.processLeft(mono) * preamp
 
                 mono = min(max(mono, -1.0), 1.0)
                 floatPtr0[i] = mono

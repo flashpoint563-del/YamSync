@@ -171,6 +171,9 @@ class PlaybackManager(
         private set
     private var preloadJob: Job? = null
 
+    // ⏱ Запас на запуск следующего трека перед кроссфейдом по фактическим замерам
+    private val transitionLead = TransitionLeadEstimator { currentTimeMillis() }
+
     private var progressJob: Job? = null
     private var playTrackJob: Job? = null
     @Volatile private var isSeeking: Boolean = false
@@ -215,6 +218,9 @@ class PlaybackManager(
 
             if (!hasTriggeredAutoAdvance && !isSeeking && isPlaying && !isPaused && totalDur > 6000L) {
                 hasTriggeredAutoAdvance = true
+                if (effectiveCrossfadeMs > 0L) {
+                    transitionLead.onTransitionRequested(isNextTrackLocal(), isNextTrackPreloaded())
+                }
                 println("PlaybackManager: 📻 Аппаратный TimeObserver: автопереход к следующему треку (кроссфейд: ${effectiveCrossfadeMs}мс)")
                 if (waveBridge?.isWaveMode == true) {
                     waveBridge.onWaveTrackFinished(effectiveCrossfadeMs)
@@ -226,6 +232,7 @@ class PlaybackManager(
 
         audioPlayer.setOnPlaybackStartedListener {
             scope.launch {
+                transitionLead.onPlaybackStarted()
                 isNextLoading = false
                 isPrevLoading = false
                 isPlayLoading = false
@@ -457,6 +464,7 @@ class PlaybackManager(
     ) {
         if (crossfadeMs <= 0L) {
             hasTriggeredAutoAdvance = false
+            transitionLead.cancel()
         }
         isFallbackDownloading = false
         wasInterruptedBySystem = false
@@ -948,6 +956,7 @@ class PlaybackManager(
                     hasStartedPlaying = true
                     checksWithoutPlaying = 0
                     positionMs = audioPlayer.getCurrentPositionMs()
+                    if (positionMs > 0L) transitionLead.onAudioAdvancing()
                     val audioDur = audioPlayer.getDurationMs()
                     if (audioDur > 0 && durationMs != audioDur) {
                         durationMs = audioDur
@@ -990,15 +999,14 @@ class PlaybackManager(
                     val crossfadeMs = crossfadeSeconds * 1000L
                     val maxAllowedCrossfade = (totalDur * 0.35f).toLong()
                     val effectiveCrossfadeMs = if (crossfadeMs > 0L) minOf(crossfadeMs, maxAllowedCrossfade) else 0L
-                    val isNextLocal = preloadedAudio?.filePath != null ||
-                            queueManager.plannedNextTrack?.id?.startsWith("local:") == true ||
-                            (currentPlayingFilePath != null && queueManager.plannedNextTrack?.let {
-                                localTrackResolver.findLocalTrackFile(it.id, it.artists.firstOrNull()?.name ?: "", it.title, getSelectedQuality())
-                            } != null)
+                    val isNextLocal = isNextTrackLocal()
+                    val isNextPreloaded = isNextTrackPreloaded()
 
-                    val leadHeadroomMs = if (crossfadeMs > 0L) {
-                        if (isNextLocal) 500L else 6500L
-                    } else 800L
+                    val leadHeadroomMs = transitionLead.leadMs(
+                        hasCrossfade = crossfadeMs > 0L,
+                        isNextLocal = isNextLocal,
+                        isNextPreloaded = isNextPreloaded
+                    )
                     val triggerThresholdMs = if (crossfadeMs > 0L) {
                         (effectiveCrossfadeMs + leadHeadroomMs).coerceAtMost(maxAllowedCrossfade + leadHeadroomMs).coerceAtMost((totalDur * 0.45f).toLong())
                     } else {
@@ -1016,6 +1024,9 @@ class PlaybackManager(
 
                     if (!hasTriggeredAutoAdvance && !isSeeking && totalDur > 6000L && playedSinceStartMs > 3000L && (isNearTrackEnd || isSilenceAtTail)) {
                         hasTriggeredAutoAdvance = true
+                        if (effectiveCrossfadeMs > 0L) {
+                            transitionLead.onTransitionRequested(isNextLocal, isNextPreloaded)
+                        }
                         println("PlaybackManager: 📻 Автопереключение на следующий трек (кроссфейд: ${effectiveCrossfadeMs}мс, позиция: $positionMs / $totalDur мс, тишина: $isSilenceAtTail)")
                         if (waveBridge?.isWaveMode == true) {
                             waveBridge.onWaveTrackFinished(effectiveCrossfadeMs)
@@ -1489,6 +1500,23 @@ class PlaybackManager(
             loadedTracks = queueSource.getLoadedTracks(),
             searchTracks = queueSource.getSearchTracks()
         )
+    }
+
+    /** Следующий трек запустится без сети: файл на диске или аудио уже в памяти. */
+    private fun isNextTrackLocal(): Boolean {
+        val next = queueManager.plannedNextTrack
+        val preloaded = preloadedAudio?.takeIf { it.trackId == next?.id }
+        return preloaded?.filePath != null || preloaded?.audioData != null ||
+            next?.id?.startsWith("local:") == true ||
+            (currentPlayingFilePath != null && next?.let {
+                localTrackResolver.findLocalTrackFile(it.id, it.artists.firstOrNull()?.name ?: "", it.title, getSelectedQuality())
+            } != null)
+    }
+
+    /** Для следующего трека уже подготовлено начало потока. */
+    private fun isNextTrackPreloaded(): Boolean {
+        val nextId = queueManager.plannedNextTrack?.id ?: return false
+        return preloadedAudio?.trackId == nextId
     }
 
     /**
